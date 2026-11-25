@@ -22,7 +22,12 @@ authRouter.post('/login', async (req, res: Response) => {
     res.json(result.data);
   } catch (err: any) {
     console.error('Login Endpoint Error:', err);
-    res.status(500).json({ error: err?.message || 'Login failed due to an internal server error.' });
+    const msg = err?.message || '';
+    const userFriendlyError =
+      msg.includes("Can't reach database") || msg.includes('P1001') || msg.includes('timeout')
+        ? 'The database server is currently waking up or temporarily unreachable. Please try again in a few moments.'
+        : 'Login failed due to an internal server error. Please try again.';
+    res.status(500).json({ error: userFriendlyError });
   }
 });
 

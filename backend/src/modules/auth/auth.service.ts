@@ -45,24 +45,67 @@ export class AuthService {
       return { error: 'Phone and password required', status: 400 };
     }
 
-    const user = await prisma.user.findFirst({
-      where: { phone: phoneTrim },
-      include: {
-        branch: { select: { id: true, name: true, isActive: true, isHub: true } },
-        customRole: {
-          select: {
-            id: true,
-            code: true,
-            name: true,
-            nameAm: true,
-            nameOm: true,
-            description: true,
-            baseRole: true,
-            permissions: true,
+    let user;
+    try {
+      user = await prisma.user.findFirst({
+        where: { phone: phoneTrim },
+        include: {
+          branch: { select: { id: true, name: true, isActive: true, isHub: true } },
+          customRole: {
+            select: {
+              id: true,
+              code: true,
+              name: true,
+              nameAm: true,
+              nameOm: true,
+              description: true,
+              baseRole: true,
+              permissions: true,
+            },
           },
         },
-      },
-    });
+      });
+    } catch (dbErr: any) {
+      // If Neon / cloud database was sleeping (P1001 / connection timeout), wait 2 seconds and retry once
+      const isConnectionError =
+        dbErr?.code === 'P1001' ||
+        dbErr?.message?.includes("Can't reach database server") ||
+        dbErr?.message?.includes('connection') ||
+        dbErr?.message?.includes('timeout');
+
+      if (isConnectionError) {
+        console.warn('Database connection initial attempt failed (waking from scale-to-zero). Retrying in 2s...');
+        await new Promise((resolve) => setTimeout(resolve, 2000));
+        try {
+          user = await prisma.user.findFirst({
+            where: { phone: phoneTrim },
+            include: {
+              branch: { select: { id: true, name: true, isActive: true, isHub: true } },
+              customRole: {
+                select: {
+                  id: true,
+                  code: true,
+                  name: true,
+                  nameAm: true,
+                  nameOm: true,
+                  description: true,
+                  baseRole: true,
+                  permissions: true,
+                },
+              },
+            },
+          });
+        } catch (retryErr: any) {
+          console.error('Database connection retry failed:', retryErr);
+          return {
+            error: 'The database server is currently waking up or temporarily unreachable. Please try again in a few moments.',
+            status: 503,
+          };
+        }
+      } else {
+        throw dbErr;
+      }
+    }
 
     if (!user) {
       return { error: 'Invalid credentials', status: 401 };

@@ -7,6 +7,16 @@ function getDatabaseUrl(): string | undefined {
   // Strip wrapping double or single quotes if present
   url = url.replace(/^["']|["']$/g, '').trim();
 
+  // Neon / Cloud Postgres: set connect_timeout and pool_timeout to allow compute wake-up (scale-to-zero)
+  if (!url.includes('connect_timeout=')) {
+    const separator = url.includes('?') ? '&' : '?';
+    url = `${url}${separator}connect_timeout=30`;
+  }
+  if (!url.includes('pool_timeout=')) {
+    const separator = url.includes('?') ? '&' : '?';
+    url = `${url}${separator}pool_timeout=30`;
+  }
+
   // Supabase pooler (port 6543) requires pgbouncer=true to disable prepared statements (fixes 42P05 "prepared statement already exists")
   if ((url.includes(':6543') || url.includes('pooler')) && !url.includes('pgbouncer=')) {
     const separator = url.includes('?') ? '&' : '?';
