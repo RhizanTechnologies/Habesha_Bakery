@@ -1,0 +1,841 @@
+import { prisma } from '../../lib/prisma.js';
+import { businessDateFromYmdString, parseYmd } from '../../lib/businessDate.js';
+import type { ServiceResponse, ServiceResult } from '../../types/service-response.js';
+
+function startOfDayUtc(d: Date): Date {
+  const x = new Date(d);
+  x.setUTCHours(0, 0, 0, 0);
+  return x;
+}
+
+function endOfDayUtc(d: Date): Date {
+  const x = new Date(d);
+  x.setUTCHours(23, 59, 59, 999);
+  return x;
+}
+
+export class FinancialReportsService {
+  async getRangeReport(branchId?: string | null, from?: string, to?: string, date?: string): ServiceResult {
+    if (!branchId) {
+      return { error: 'branchId required', status: 400 };
+    }
+
+    const fromStr = from || date;
+    const toStr = to || date;
+
+    let fromDate: Date;
+    let toDate: Date;
+
+    if (fromStr) {
+      const p = parseYmd(fromStr);
+      fromDate = p ? new Date(Date.UTC(p.y, p.mo - 1, p.day, 0, 0, 0, 0)) : startOfDayUtc(new Date());
+    } else {
+      fromDate = startOfDayUtc(new Date());
+    }
+
+    if (toStr) {
+      const p = parseYmd(toStr);
+      toDate = p ? new Date(Date.UTC(p.y, p.mo - 1, p.day, 23, 59, 59, 999)) : endOfDayUtc(new Date());
+    } else {
+      toDate = endOfDayUtc(new Date());
+    }
+
+    const timestampStart = fromDate;
+    const timestampEnd = toDate;
+
+    const [
+      sessions,
+      expenses,
+      loans,
+      customerLoanPayments,
+      customerCredits,
+      customerCreditPayments,
+      allDeliveries,
+      pendingSupplierDeliveries,
+      supplierDeliveryPayments,
+      unpaidStockLoans,
+      stockPurchasePayments,
+      payroll,
+      productionBatches,
+      allClosedSessions,
+      sales,
+      leftoverRecords,
+    ] = await Promise.all([
+      prisma.dailySession.findMany({
+        where: { branchId, date: { gte: fromDate, lte: toDate } },
+        include: {
+          sales: { include: { items: { include: { product: true } } } },
+          leftoverRecords: { include: { product: true } },
+        },
+        orderBy: { date: 'asc' },
+      }),
+      prisma.expense.findMany({
+        where: { branchId, date: { gte: fromDate, lte: toDate } },
+        include: {
+          financialCategory: { select: { name: true } },
+          user: { select: { fullName: true } },
+        },
+        orderBy: { date: 'desc' },
+      }),
+      prisma.loan.findMany({
+        where: { branchId, date: { gte: fromDate, lte: toDate } },
+        include: { user: { select: { fullName: true } }, payments: true },
+        orderBy: { date: 'desc' },
+      }),
+      prisma.loanPayment.findMany({
+        where: {
+          loan: { branchId, type: 'CUSTOMER' },
+          date: { gte: fromDate, lte: toDate },
+        },
+        include: { loan: { select: { id: true, entityId: true } } },
+        orderBy: { date: 'desc' },
+      }),
+      prisma.customerCredit.findMany({
+        where: { branchId, date: { gte: fromDate, lte: toDate } },
+        include: { customer: true, payments: true },
+        orderBy: { date: 'desc' },
+      }),
+      prisma.customerCreditPayment.findMany({
+        where: {
+          credit: { branchId },
+          date: { gte: fromDate, lte: toDate },
+        },
+        include: { credit: { include: { customer: true } } },
+        orderBy: { date: 'desc' },
+      }),
+      prisma.supplierDelivery.findMany({
+        where: {
+          AND: [
+            {
+              OR: [
+                { supplier: { branchId } },
+                { session: { branchId } },
+              ],
+            },
+            {
+              OR: [
+                { createdAt: { gte: timestampStart, lte: timestampEnd } },
+                { session: { date: { gte: fromDate, lte: toDate } } },
+              ],
+            },
+          ],
+        },
+        include: {
+          supplier: { select: { id: true, name: true, branchId: true } },
+          product: { select: { id: true, name: true, unitType: true, basePrice: true, buyPrice: true } },
+          session: { select: { id: true, date: true, status: true } },
+        },
+        orderBy: { createdAt: 'desc' },
+      }),
+      prisma.supplierDelivery.findMany({
+        where: {
+          OR: [
+            { supplier: { branchId } },
+            { session: { branchId } },
+          ],
+          paymentStatus: { not: 'PAID' },
+        },
+        include: {
+          supplier: { select: { id: true, name: true, branchId: true } },
+          product: { select: { id: true, name: true, unitType: true, basePrice: true, buyPrice: true } },
+          session: { select: { id: true, date: true, status: true } },
+        },
+        orderBy: { createdAt: 'desc' },
+      }),
+      prisma.supplierDeliveryPayment.findMany({
+        where: {
+          delivery: {
+            OR: [
+              { supplier: { branchId } },
+              { session: { branchId } },
+            ],
+          },
+          createdAt: { gte: timestampStart, lte: timestampEnd },
+        },
+        include: {
+          delivery: {
+            include: {
+              supplier: { select: { id: true, name: true } },
+              product: { select: { id: true, name: true, unitType: true } },
+            },
+          },
+        },
+        orderBy: { createdAt: 'desc' },
+      }),
+      prisma.stockPurchaseLoan.findMany({
+        where: {
+          branchId,
+          status: { not: 'PAID' },
+        },
+        include: {
+          stockMovement: {
+            select: {
+              stockItem: { select: { name: true, unitType: true } },
+            },
+          },
+        },
+        orderBy: { createdAt: 'desc' },
+      }),
+      prisma.stockPurchasePayment.findMany({
+        where: {
+          loan: { branchId },
+          createdAt: { gte: timestampStart, lte: timestampEnd },
+        },
+        include: {
+          user: { select: { fullName: true } },
+          loan: { select: { supplierName: true, stockMovement: { select: { stockItem: { select: { name: true } } } } } },
+        },
+        orderBy: { createdAt: 'desc' },
+      }),
+      prisma.payrollRecord.findMany({
+        where: {
+          user: { branchId },
+          status: { not: 'REJECTED' },
+          OR: [
+            { paymentDate: { gte: timestampStart, lte: timestampEnd } },
+            { paymentDate: null, createdAt: { gte: timestampStart, lte: timestampEnd } },
+          ],
+        },
+        include: { user: { select: { id: true, fullName: true, phone: true, role: true } } },
+        orderBy: { createdAt: 'desc' },
+      }),
+      prisma.productionBatch.findMany({
+        where: { branchId, date: { gte: fromDate, lte: toDate } },
+        include: {
+          user: { select: { fullName: true } },
+          items: { include: { product: true } },
+          materialUsages: { include: { stockItem: true } },
+        },
+        orderBy: { date: 'desc' },
+      }),
+      prisma.dailySession.findMany({
+        where: { branchId, status: 'CLOSED', date: { lte: toDate } },
+        orderBy: { date: 'desc' },
+        take: 30,
+        select: { date: true, cashLeftoverAmount: true, actualCashAmount: true },
+      }),
+      prisma.sale.findMany({
+        where: {
+          OR: [
+            { branchId, date: { gte: fromDate, lte: toDate } },
+            { session: { branchId, date: { gte: fromDate, lte: toDate } } },
+          ],
+        },
+        include: { items: { include: { product: true } } },
+        orderBy: { date: 'asc' },
+      }),
+      prisma.leftoverRecord.findMany({
+        where: {
+          OR: [
+            { branchId, date: { gte: fromDate, lte: toDate } },
+            { session: { branchId, date: { gte: fromDate, lte: toDate } } },
+          ],
+        },
+        include: { product: true },
+        orderBy: { date: 'asc' },
+      }),
+    ]);
+
+    const salesTotal = sales.reduce((t, x) => t + Number(x.totalAmount), 0);
+    const cashLeftoverTotal = sessions.reduce((acc, s) => acc + (s.cashLeftoverAmount ? Number(s.cashLeftoverAmount) : 0), 0);
+    const openingLeftoverQuantity = leftoverRecords.reduce((sum, r) => sum + (r.quantityRemaining || 0), 0);
+
+    const companyExpenseTotal = expenses.filter(e => e.type === 'COMPANY').reduce((sum, e) => sum + Number(e.amount), 0);
+    const ownerExpenseTotal = expenses.filter(e => e.type === 'OWNER').reduce((sum, e) => sum + Number(e.amount), 0);
+
+    const loanTotal = loans.reduce((sum, l) => sum + Number(l.totalAmount), 0);
+    const legacyCustomerLoans = loans.filter(l => l.type === 'CUSTOMER');
+    const customerLoans = [
+      ...customerCredits.map((c) => ({
+        id: c.id,
+        entityId: c.description,
+        totalAmount: Number(c.amount),
+        remainingBalance: Number(c.remainingBalance),
+        status: c.status,
+        date: c.date,
+        createdAt: c.createdAt,
+        customer: c.customer,
+      })),
+      ...legacyCustomerLoans.map((l) => ({
+        id: l.id,
+        entityId: l.entityId,
+        totalAmount: Number(l.totalAmount),
+        remainingBalance: Number(l.remainingBalance),
+        status: l.status,
+        date: l.date,
+        createdAt: l.createdAt,
+        customer: null,
+      })),
+    ];
+    const customerCreditSalesTotal = customerLoans.reduce((sum, l) => sum + Number(l.totalAmount), 0);
+    const customerCreditRemainingBalanceTotal = customerLoans.reduce((sum, l) => sum + Number(l.remainingBalance), 0);
+    const employeeLoans = loans.filter(l => l.type !== 'CUSTOMER');
+    const employeeLoanTotal = employeeLoans.reduce((sum, l) => sum + Number(l.totalAmount), 0);
+
+    const customerCreditPaymentTotal =
+      customerLoanPayments.reduce((sum, p) => sum + Number(p.amountPaid), 0) +
+      customerCreditPayments.reduce((sum, p) => sum + Number(p.amount), 0);
+
+    // Unpaid deliveries (Payables / Credits that owner has to pay - ONLY REMAINING UNPAID BALANCE)
+    const allPendingDeliveryCandidates = [...allDeliveries, ...pendingSupplierDeliveries];
+    const uniquePendingDeliveryMap = new Map<string, any>();
+    for (const d of allPendingDeliveryCandidates) {
+      if (!uniquePendingDeliveryMap.has(d.id)) {
+        uniquePendingDeliveryMap.set(d.id, d);
+      }
+    }
+    const unpaidSupplierDeliveries = Array.from(uniquePendingDeliveryMap.values())
+      .map((d) => {
+        const netQty = Math.max(0, d.quantityReceived - (d.returnedQuantity || 0));
+        const totalCost = Number((netQty * Number(d.unitBuyPrice)).toFixed(2));
+        const paidAmount = Number(Number(d.paidAmount || 0).toFixed(2));
+        const remainingBalance = Math.max(0, Number((totalCost - paidAmount).toFixed(2)));
+        return {
+          ...d,
+          totalCost,
+          paidAmount,
+          remainingBalance,
+        };
+      })
+      .filter((d) => d.remainingBalance > 0.001);
+
+    const unpaidSupplierDeliveriesTotal = unpaidSupplierDeliveries.reduce(
+      (s, d) => s + d.remainingBalance,
+      0
+    );
+
+    // Unpaid stock purchase loans (Credits/debts that owner has to pay to suppliers - ONLY REMAINING UNPAID BALANCE)
+    const activeUnpaidStockLoans = unpaidStockLoans
+      .map((sl) => {
+        const totalAmount = Number(Number(sl.totalAmount).toFixed(2));
+        const paidAmount = Number(Number(sl.paidAmount || 0).toFixed(2));
+        const remainingBalance = Math.max(0, Number((Number(sl.remainingBalance) || (totalAmount - paidAmount)).toFixed(2)));
+        return {
+          ...sl,
+          totalAmount,
+          paidAmount,
+          remainingBalance,
+        };
+      })
+      .filter((sl) => sl.remainingBalance > 0.001);
+
+    const unpaidStockLoansTotal = activeUnpaidStockLoans.reduce(
+      (sum, sl) => sum + sl.remainingBalance,
+      0
+    );
+    const totalPendingOwnerLiabilities = unpaidSupplierDeliveriesTotal + unpaidStockLoansTotal;
+
+    // Paid credit amounts in this period (MUST BE COUNTED AS EXPENSES)
+    const stockLoanPaymentTotal = stockPurchasePayments.reduce((sum, sp) => sum + Number(sp.amount), 0);
+    const supplierDeliveryPaymentTotal = supplierDeliveryPayments.reduce((sum, sdp) => sum + Number(sdp.amount), 0);
+
+    // Initial cash paid on deliveries created in this range without separate payment record
+    const initialCashDeliveriesInPeriod = allDeliveries.filter((d) =>
+      d.paymentSource === 'DAILY_CASH' &&
+      Number(d.paidAmount) > 0 &&
+      !supplierDeliveryPayments.some((sdp) => sdp.deliveryId === d.id)
+    );
+    const initialCashPaidDeliveryTotal = initialCashDeliveriesInPeriod.reduce((sum, d) => sum + Number(d.paidAmount), 0);
+    const totalSupplierDeliveryPaid = supplierDeliveryPaymentTotal + initialCashPaidDeliveryTotal;
+
+    const totalStockAndSupplierCreditPaid = stockLoanPaymentTotal + totalSupplierDeliveryPaid;
+    const pureCompanyExpenseTotal = companyExpenseTotal;
+    const fullCompanyExpenseTotal = pureCompanyExpenseTotal + totalStockAndSupplierCreditPaid;
+
+    const payrollTotal = payroll.reduce((sum, p) => sum + Number(p.finalAmount), 0);
+
+    // Total Revenue (Accrual: POS cash/bank sales + Customer Credited product sales)
+    const grossRevenueTotal = salesTotal + customerCreditSalesTotal;
+
+    // Cash Realized / Cash Collections (POS sales + Customer Credit repayments collected)
+    const totalCashCollected = salesTotal + customerCreditPaymentTotal;
+
+    // Total Operating Expenses (Daily operating costs + payroll + stock/supplier credit payments)
+    const totalOperatingExpenses = fullCompanyExpenseTotal + payrollTotal;
+    const totalMaterialCosts = totalSupplierDeliveryPaid;
+    const totalCompanyCosts = totalOperatingExpenses + totalMaterialCosts;
+
+    // Gross & Operating Net Profit (Accrual: including credited products sold)
+    const grossProfit = grossRevenueTotal - totalMaterialCosts;
+    const operatingNetIncome = grossRevenueTotal - totalCompanyCosts;
+
+    // Net Cash Position Change (Cash Inflows - Cash Outflows)
+    const netCashPositionChange = totalCashCollected - (fullCompanyExpenseTotal + payrollTotal + ownerExpenseTotal);
+
+    // Net Income after Owner Personal Expenses / Withdrawals
+    const netIncomeAfterOwnerDrawings = operatingNetIncome - ownerExpenseTotal;
+
+    // openingLeftoverQuantity already computed above from all leftoverRecords
+
+
+    // Build Daily Breakdown Map
+    const dailyMap = new Map<string, any>();
+
+    const getOrCreateDailyEntry = (dayKey: string) => {
+      if (!dailyMap.has(dayKey)) {
+        dailyMap.set(dayKey, {
+          date: dayKey,
+          sessionId: null,
+          sessionStatus: null,
+          yesterdayCashLeftover: 0,
+          salesTotal: 0,
+          creditReceivedFromLoan: 0,
+          tomorrowCashLeftover: 0,
+          dailyTotalRevenue: 0,
+          companyExpenseTotal: 0,
+          ownerExpenseTotal: 0,
+          dailyNetIncome: 0,
+          openingLeftoverQuantity: 0,
+          customerCreditSalesTotal: 0,
+          customerCreditPaymentTotal: 0,
+          grossRevenueTotal: 0,
+          totalCashCollected: 0,
+          cashLeftoverTotal: 0,
+          loanTotal: 0,
+          supplierDeliveryCost: 0,
+          stockLoanPaymentTotal: 0,
+          payrollTotal: 0,
+          operatingNetIncome: 0,
+          netCashPositionChange: 0,
+        });
+      }
+      return dailyMap.get(dayKey);
+    };
+
+    for (const s of sessions) {
+      const dayKey = s.date.toISOString().slice(0, 10);
+      const entry = getOrCreateDailyEntry(dayKey);
+      entry.sessionId = s.id;
+      entry.sessionStatus = s.status;
+
+      let yesterdayCash = s.openingCashFloat != null ? Number(s.openingCashFloat) : 0;
+      if (yesterdayCash === 0) {
+        const prevClosed = allClosedSessions.find((cs) => cs.date < s.date);
+        yesterdayCash = prevClosed?.cashLeftoverAmount != null
+          ? Number(prevClosed.cashLeftoverAmount)
+          : (prevClosed?.actualCashAmount != null ? Number(prevClosed.actualCashAmount) : 0);
+      }
+      entry.yesterdayCashLeftover = yesterdayCash;
+
+      const tomorrowCash = s.cashLeftoverAmount != null ? Number(s.cashLeftoverAmount) : 0;
+      entry.tomorrowCashLeftover = tomorrowCash;
+      entry.cashLeftoverTotal += tomorrowCash;
+    }
+
+    for (const sl of sales) {
+      const dayKey = sl.date ? new Date(sl.date).toISOString().slice(0, 10) : new Date(sl.createdAt).toISOString().slice(0, 10);
+      const entry = getOrCreateDailyEntry(dayKey);
+      entry.salesTotal += Number(sl.totalAmount);
+    }
+
+    for (const r of leftoverRecords) {
+      const dayKey = r.date ? new Date(r.date).toISOString().slice(0, 10) : new Date().toISOString().slice(0, 10);
+      const entry = getOrCreateDailyEntry(dayKey);
+      entry.openingLeftoverQuantity += (r.quantityRemaining || 0);
+    }
+
+    for (const e of expenses) {
+      const dayKey = e.date ? new Date(e.date).toISOString().slice(0, 10) : new Date(e.createdAt).toISOString().slice(0, 10);
+      const entry = getOrCreateDailyEntry(dayKey);
+      if (e.type === 'COMPANY') {
+        entry.companyExpenseTotal += Number(e.amount);
+      } else if (e.type === 'OWNER') {
+        entry.ownerExpenseTotal += Number(e.amount);
+      }
+    }
+
+    for (const l of loans) {
+      const dayKey = l.date ? new Date(l.date).toISOString().slice(0, 10) : new Date(l.createdAt).toISOString().slice(0, 10);
+      const entry = getOrCreateDailyEntry(dayKey);
+      entry.loanTotal += Number(l.totalAmount);
+      if (l.type === 'CUSTOMER') {
+        entry.customerCreditSalesTotal += Number(l.totalAmount);
+        entry.customerCreditRemainingBalanceTotal = (entry.customerCreditRemainingBalanceTotal || 0) + Number(l.remainingBalance);
+      }
+    }
+
+    for (const cc of customerCredits) {
+      const dayKey = cc.date ? new Date(cc.date).toISOString().slice(0, 10) : new Date(cc.createdAt).toISOString().slice(0, 10);
+      const entry = getOrCreateDailyEntry(dayKey);
+      entry.customerCreditSalesTotal += Number(cc.amount);
+      entry.customerCreditRemainingBalanceTotal = (entry.customerCreditRemainingBalanceTotal || 0) + Number(cc.remainingBalance);
+    }
+
+    for (const cp of customerLoanPayments) {
+      const dayKey = cp.date ? new Date(cp.date).toISOString().slice(0, 10) : new Date(cp.createdAt).toISOString().slice(0, 10);
+      const entry = getOrCreateDailyEntry(dayKey);
+      entry.creditReceivedFromLoan += Number(cp.amountPaid);
+      entry.customerCreditPaymentTotal += Number(cp.amountPaid);
+    }
+
+    for (const ccp of customerCreditPayments) {
+      const dayKey = ccp.date ? new Date(ccp.date).toISOString().slice(0, 10) : new Date(ccp.createdAt).toISOString().slice(0, 10);
+      const entry = getOrCreateDailyEntry(dayKey);
+      entry.creditReceivedFromLoan += Number(ccp.amount);
+      entry.customerCreditPaymentTotal += Number(ccp.amount);
+    }
+
+    for (const d of initialCashDeliveriesInPeriod) {
+      const dayKey = d.session?.date
+        ? new Date(d.session.date).toISOString().slice(0, 10)
+        : new Date(d.createdAt).toISOString().slice(0, 10);
+      const entry = getOrCreateDailyEntry(dayKey);
+      const amt = Number(d.paidAmount);
+      entry.supplierDeliveryCost += amt;
+      entry.companyExpenseTotal += amt;
+    }
+
+    for (const sp of stockPurchasePayments) {
+      const dayKey = new Date(sp.createdAt).toISOString().slice(0, 10);
+      const entry = getOrCreateDailyEntry(dayKey);
+      const amt = Number(sp.amount);
+      entry.stockLoanPaymentTotal += amt;
+      entry.companyExpenseTotal += amt;
+    }
+
+    for (const sdp of supplierDeliveryPayments) {
+      const dayKey = new Date(sdp.createdAt).toISOString().slice(0, 10);
+      const entry = getOrCreateDailyEntry(dayKey);
+      const amt = Number(sdp.amount);
+      entry.supplierDeliveryPaymentTotal = (entry.supplierDeliveryPaymentTotal || 0) + amt;
+      entry.companyExpenseTotal += amt;
+    }
+
+    for (const p of payroll) {
+      const dayKey = p.paymentDate ? new Date(p.paymentDate).toISOString().slice(0, 10) : new Date(p.createdAt).toISOString().slice(0, 10);
+      const entry = getOrCreateDailyEntry(dayKey);
+      entry.payrollTotal += Number(p.finalAmount);
+    }
+
+    const dailyBreakdown = Array.from(dailyMap.values()).sort((a, b) => a.date.localeCompare(b.date));
+    for (const entry of dailyBreakdown) {
+      // Exact user formula: Yesterday Leftover + Sales Income + Credit Received - Tomorrow Leftover
+      entry.dailyTotalRevenue = entry.yesterdayCashLeftover + entry.salesTotal + entry.creditReceivedFromLoan - entry.tomorrowCashLeftover;
+      // Net Income: Total Revenue - Total Expense (including paid credits)
+      entry.dailyNetIncome = entry.dailyTotalRevenue - entry.companyExpenseTotal;
+
+      entry.grossRevenueTotal = entry.salesTotal + entry.customerCreditSalesTotal;
+      entry.totalCashCollected = entry.salesTotal + entry.customerCreditPaymentTotal;
+      entry.operatingNetIncome = entry.dailyNetIncome;
+      entry.netCashPositionChange = entry.totalCashCollected - (entry.companyExpenseTotal + entry.payrollTotal + entry.ownerExpenseTotal);
+    }
+
+    const rangeYesterdayCash = dailyBreakdown.length > 0 ? dailyBreakdown[0].yesterdayCashLeftover : 0;
+    const rangeTomorrowCash = dailyBreakdown.length > 0 ? dailyBreakdown[dailyBreakdown.length - 1].tomorrowCashLeftover : 0;
+    const totalCreditReceived = dailyBreakdown.reduce((sum, d) => sum + d.creditReceivedFromLoan, 0);
+    const totalDailyRevenue = dailyBreakdown.reduce((sum, d) => sum + d.dailyTotalRevenue, 0);
+    const totalDailyNetIncome = dailyBreakdown.reduce((sum, d) => sum + d.dailyNetIncome, 0);
+
+    const totals = {
+      // Exact formula fields:
+      yesterdayLeftoverCash: rangeYesterdayCash,
+      salesTotal,
+      creditReceivedFromLoans: totalCreditReceived,
+      tomorrowLeftoverCash: rangeTomorrowCash,
+      dailyTotalRevenue: totalDailyRevenue,
+      companyExpenseTotal: fullCompanyExpenseTotal,
+      pureCompanyExpenseTotal,
+      paidStockCreditExpenseTotal: totalStockAndSupplierCreditPaid,
+      ownerExpenseTotal,
+      dailyNetIncome: totalDailyNetIncome,
+
+      // Compatibility & Extended reporting:
+      openingLeftoverQuantity,
+      customerCreditSalesTotal,
+      customerCreditRemainingBalanceTotal,
+      customerCreditPaymentTotal,
+      grossRevenueTotal,
+      totalCashCollected,
+      cashLeftoverTotal: rangeTomorrowCash || cashLeftoverTotal,
+      loanTotal,
+      employeeLoanTotal,
+      supplierDeliveryCost: totalSupplierDeliveryPaid,
+      stockLoanPaymentTotal,
+      supplierDeliveryPaymentTotal: totalSupplierDeliveryPaid,
+      payrollTotal,
+      totalOperatingExpenses: fullCompanyExpenseTotal,
+      totalExpense: fullCompanyExpenseTotal,
+      totalExpenses: fullCompanyExpenseTotal,
+      grossProfit: totalDailyRevenue - fullCompanyExpenseTotal,
+      operatingNetIncome: totalDailyNetIncome,
+      netIncome: totalDailyNetIncome,
+      netCashPositionChange,
+      netIncomeAfterOwnerDrawings: totalDailyNetIncome - ownerExpenseTotal,
+      unpaidSupplierDeliveriesTotal,
+      unpaidStockLoansTotal,
+      totalPendingOwnerLiabilities,
+      dailyTotalRevenueWithCredit: totalDailyRevenue + customerCreditSalesTotal,
+      ownerExpenseWithLiabilities: ownerExpenseTotal + totalPendingOwnerLiabilities,
+    };
+
+    return {
+      data: {
+        branchId,
+        from: fromDate.toISOString().slice(0, 10),
+        to: toDate.toISOString().slice(0, 10),
+        fromDate: fromDate.toISOString().slice(0, 10),
+        toDate: toDate.toISOString().slice(0, 10),
+        totals,
+        salesTotal,
+        yesterdayLeftoverCash: totals.yesterdayLeftoverCash,
+        creditReceivedFromLoans: totals.creditReceivedFromLoans,
+        tomorrowLeftoverCash: totals.tomorrowLeftoverCash,
+        dailyTotalRevenue: totals.dailyTotalRevenue,
+        dailyTotalRevenueWithCredit: totals.dailyTotalRevenueWithCredit,
+        customerCreditSalesTotal,
+        customerCreditRemainingBalanceTotal,
+        customerCreditPaymentTotal,
+        grossRevenueTotal,
+        totalCashCollected,
+        cashLeftoverTotal: totals.tomorrowLeftoverCash || cashLeftoverTotal,
+        companyExpenseTotal: totals.companyExpenseTotal,
+        pureCompanyExpenseTotal: totals.pureCompanyExpenseTotal,
+        paidStockCreditExpenseTotal: totals.paidStockCreditExpenseTotal,
+        ownerExpenseTotal,
+        ownerExpenseWithLiabilities: totals.ownerExpenseWithLiabilities,
+        unpaidSupplierDeliveriesTotal,
+        unpaidStockLoansTotal,
+        totalPendingOwnerLiabilities,
+        loanTotal,
+        employeeLoanTotal,
+        supplierDeliveryCost: totals.supplierDeliveryCost,
+        stockLoanPaymentTotal,
+        supplierDeliveryPaymentTotal: totals.supplierDeliveryPaymentTotal,
+        payrollTotal,
+        totalOperatingExpenses: totals.totalOperatingExpenses,
+        totalExpense: totals.totalExpense,
+        totalExpenses: totals.totalExpenses,
+        grossProfit: totals.grossProfit,
+        operatingNetIncome: totals.dailyNetIncome,
+        netIncome: totals.dailyNetIncome,
+        netCashPositionChange,
+        netIncomeAfterOwnerDrawings: totals.netIncomeAfterOwnerDrawings,
+        dailyBreakdown,
+        sessions,
+        sales,
+        leftoverRecords,
+        productionBatches,
+        expenses,
+        companyExpenses: expenses.filter(e => e.type === 'COMPANY'),
+        ownerExpenses: expenses.filter(e => e.type === 'OWNER'),
+        loans,
+        customerLoans,
+        employeeLoans,
+        customerLoanPayments,
+        supplierDeliveries: unpaidSupplierDeliveries,
+        unpaidSupplierDeliveries,
+        unpaidStockLoans: activeUnpaidStockLoans,
+        stockPurchasePayments,
+        supplierDeliveryPayments,
+        payrollRecords: payroll,
+      },
+    };
+  }
+
+  async getPeriodReport(period: string, branchId?: string | null, query?: any): ServiceResult {
+    if (!branchId) {
+      return { error: 'branchId required', status: 400 };
+    }
+
+    const today = new Date();
+    const y = parseInt((query?.year as string) || String(today.getUTCFullYear()), 10);
+    const month = parseInt((query?.month as string) || String(today.getUTCMonth() + 1), 10);
+
+    let fromDate: Date;
+    let toDate: Date;
+
+    switch (period) {
+      case 'monthly':
+        fromDate = new Date(Date.UTC(y, month - 1, 1, 0, 0, 0, 0));
+        toDate = new Date(Date.UTC(y, month, 0, 23, 59, 59, 999));
+        break;
+      case 'yearly':
+        fromDate = new Date(Date.UTC(y, 0, 1, 0, 0, 0, 0));
+        toDate = new Date(Date.UTC(y, 11, 31, 23, 59, 59, 999));
+        break;
+      default:
+        return { error: 'Invalid period. Use monthly or yearly', status: 400 };
+    }
+
+    return this.getRangeReport(branchId, fromDate.toISOString().slice(0, 10), toDate.toISOString().slice(0, 10));
+  }
+
+  async getGainedDetails(branchId?: string | null, from?: string, to?: string, date?: string): ServiceResult {
+    if (!branchId) {
+      return { error: 'branchId required', status: 400 };
+    }
+
+    const fromDate = from || date ? businessDateFromYmdString(from || date || '') : startOfDayUtc(new Date());
+    const toDate = to || date ? businessDateFromYmdString(to || date || '') : endOfDayUtc(new Date());
+
+    if (!fromDate || !toDate) {
+      return { error: 'Invalid date range', status: 400 };
+    }
+
+    const sales = await prisma.sale.findMany({
+      where: {
+        session: { branchId, date: { gte: fromDate, lte: toDate } },
+      },
+      include: {
+        user: { select: { id: true, fullName: true, phone: true } },
+        session: { select: { id: true, date: true, status: true } },
+        items: { include: { product: { select: { id: true, name: true, unitType: true, basePrice: true } } } },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    const totalRevenue = sales.reduce((sum, s) => sum + Number(s.totalAmount), 0);
+
+    return {
+      data: {
+        fromDate: fromDate.toISOString().slice(0, 10),
+        toDate: toDate.toISOString().slice(0, 10),
+        totalRevenue,
+        salesCount: sales.length,
+        sales,
+      },
+    };
+  }
+
+  async getExpensedDetails(branchId?: string | null, from?: string, to?: string, date?: string): ServiceResult {
+    if (!branchId) {
+      return { error: 'branchId required', status: 400 };
+    }
+
+    const fromDate = from || date ? businessDateFromYmdString(from || date || '') : startOfDayUtc(new Date());
+    const toDate = to || date ? businessDateFromYmdString(to || date || '') : endOfDayUtc(new Date());
+
+    if (!fromDate || !toDate) {
+      return { error: 'Invalid date range', status: 400 };
+    }
+
+    const timestampStart = startOfDayUtc(fromDate);
+    const timestampEnd = endOfDayUtc(toDate);
+
+    const [expenses, allSupplierDeliveries, supplierDeliveryPayments, stockPurchasePayments, sessions, payrollRecords] = await Promise.all([
+      prisma.expense.findMany({
+        where: { branchId, date: { gte: fromDate, lte: toDate } },
+        include: {
+          user: { select: { id: true, fullName: true } },
+          financialCategory: { select: { id: true, name: true, type: true } },
+        },
+        orderBy: { date: 'desc' },
+      }),
+      prisma.supplierDelivery.findMany({
+        where: {
+          AND: [
+            {
+              OR: [
+                { supplier: { branchId } },
+                { session: { branchId } },
+              ],
+            },
+            {
+              OR: [
+                { createdAt: { gte: timestampStart, lte: timestampEnd } },
+                { session: { date: { gte: fromDate, lte: toDate } } },
+              ],
+            },
+          ],
+        },
+        include: {
+          supplier: { select: { id: true, name: true, type: true } },
+          product: { select: { id: true, name: true } },
+          session: { select: { id: true, date: true } },
+        },
+        orderBy: { createdAt: 'desc' },
+      }),
+      prisma.supplierDeliveryPayment.findMany({
+        where: {
+          delivery: {
+            OR: [
+              { supplier: { branchId } },
+              { session: { branchId } },
+            ],
+          },
+          createdAt: { gte: timestampStart, lte: timestampEnd },
+        },
+        include: {
+          delivery: {
+            include: {
+              supplier: { select: { id: true, name: true, type: true } },
+              product: { select: { id: true, name: true } },
+            },
+          },
+        },
+        orderBy: { createdAt: 'desc' },
+      }),
+      prisma.stockPurchasePayment.findMany({
+        where: { loan: { branchId }, createdAt: { gte: timestampStart, lte: timestampEnd } },
+        include: {
+          user: { select: { id: true, fullName: true } },
+          loan: { select: { supplierName: true, stockMovement: { select: { stockItem: { select: { name: true } } } } } },
+        },
+        orderBy: { createdAt: 'desc' },
+      }),
+      prisma.dailySession.findMany({
+        where: { branchId, date: { gte: fromDate, lte: toDate } },
+        select: { id: true, date: true, cashLeftoverAmount: true },
+      }),
+      prisma.payrollRecord.findMany({
+        where: {
+          user: { branchId },
+          status: { not: 'REJECTED' },
+          OR: [
+            { paymentDate: { gte: timestampStart, lte: timestampEnd } },
+            { paymentDate: null, createdAt: { gte: timestampStart, lte: timestampEnd } },
+          ],
+        },
+        include: { user: { select: { id: true, fullName: true, phone: true, role: true } } },
+        orderBy: { createdAt: 'desc' },
+      }),
+    ]);
+
+    const companyExpenses = expenses.filter(e => e.type === 'COMPANY');
+    const ownerExpenses = expenses.filter(e => e.type === 'OWNER');
+    const pureCompanyExpenseTotal = companyExpenses.reduce((sum, e) => sum + Number(e.amount), 0);
+    const ownerExpenseTotal = ownerExpenses.reduce((sum, e) => sum + Number(e.amount), 0);
+
+    const supplierDeliveryPaymentTotal = supplierDeliveryPayments.reduce((sum, p) => sum + Number(p.amount), 0);
+    const initialCashDeliveriesInPeriod = allSupplierDeliveries.filter(d =>
+      d.paymentSource === 'DAILY_CASH' &&
+      Number(d.paidAmount) > 0 &&
+      !supplierDeliveryPayments.some(p => p.deliveryId === d.id)
+    );
+    const initialCashPaidDeliveryTotal = initialCashDeliveriesInPeriod.reduce((sum, d) => sum + Number(d.paidAmount), 0);
+    const totalSupplierPaid = supplierDeliveryPaymentTotal + initialCashPaidDeliveryTotal;
+
+    const stockLoanTotal = stockPurchasePayments.reduce((sum, sp) => sum + Number(sp.amount), 0);
+    const totalCreditPaidAsExpense = totalSupplierPaid + stockLoanTotal;
+    const companyExpenseTotal = pureCompanyExpenseTotal + totalCreditPaidAsExpense;
+
+    const payrollTotal = payrollRecords.reduce((sum, p) => sum + Number(p.finalAmount), 0);
+    const cashLeftoverTotal = sessions.reduce((sum, s) => sum + (s.cashLeftoverAmount ? Number(s.cashLeftoverAmount) : 0), 0);
+
+    return {
+      data: {
+        fromDate: fromDate.toISOString().slice(0, 10),
+        toDate: toDate.toISOString().slice(0, 10),
+        companyExpenseTotal,
+        pureCompanyExpenseTotal,
+        paidStockCreditExpenseTotal: totalCreditPaidAsExpense,
+        ownerExpenseTotal,
+        supplierTotal: totalSupplierPaid,
+        stockLoanTotal,
+        payrollTotal,
+        cashLeftoverTotal,
+        totalCompanyExpenses: companyExpenseTotal + payrollTotal,
+        totalExpensed: companyExpenseTotal + ownerExpenseTotal + payrollTotal,
+        expenses,
+        companyExpenses,
+        ownerExpenses,
+        supplierDeliveries: allSupplierDeliveries.filter((d) => d.paymentSource === 'DAILY_CASH'),
+        allSupplierDeliveries,
+        supplierDeliveryPayments,
+        stockPurchasePayments,
+        payrollRecords,
+        cashLeftovers: sessions.filter(s => s.cashLeftoverAmount != null),
+      },
+    };
+  }
+}

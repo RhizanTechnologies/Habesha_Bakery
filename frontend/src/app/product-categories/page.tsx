@@ -1,0 +1,733 @@
+"use client";
+import { api } from "@/lib/axios";
+import { toast } from "sonner";
+
+import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
+import DashboardLayout from "@/components/DashboardLayout";
+import { useAuth } from "@/context/AuthContext";
+import { useLanguage } from "@/context/LanguageContext";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
+import ConfirmModal from "@/components/ConfirmModal";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { TableSkeleton } from "@/components/ui/skeletons";
+
+type CategoryType = "PRODUCED" | "RESELL";
+
+interface Category {
+  id: string;
+  name: string;
+  nameLatin?: string | null;
+  type: CategoryType;
+  parentId: string | null;
+  parent?: { id: string; name: string; nameLatin?: string | null; type: CategoryType } | null;
+  productionRole?: "BAKER" | "CAKE_WORKER" | "SAMBUSA_WORKER" | null;
+  _count: { products: number; children: number };
+}
+
+export default function ProductCategoriesPage() {
+  const router = useRouter();
+  const { user } = useAuth();
+  const { t, getItemName } = useLanguage();
+  const canManage = user?.role === "OWNER";
+
+  useEffect(() => {
+    if (!user) return;
+    if (user.role !== "OWNER") {
+      router.push("/production/history");
+      toast.error(t('categories.toastUnauthorizedCategories'));
+    }
+  }, [user, router]);
+
+  const queryClient = useQueryClient();
+  const [isCategoryOpen, setIsCategoryOpen] = useState(false);
+  const [isSubcategoryOpen, setIsSubcategoryOpen] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [editingCategory, setEditingCategory] = useState<Category | null>(null);
+  const [editParentId, setEditParentId] = useState<string>("");
+  const [subParentId, setSubParentId] = useState<string>("");
+
+  const { data: categories = [], isLoading } = useQuery<Category[]>({
+    queryKey: ["product-categories"],
+    placeholderData: (prev) => prev,
+    queryFn: async () => {
+      const res = await api.get("/product-categories");
+      return res.data || [];
+    },
+    enabled: !!user && user.role === "OWNER",
+  });
+
+  const renderRoleBadge = (role?: string | null) => {
+    if (!role) return <span className="text-zinc-400 text-xs font-mono">—</span>;
+    const meta: Record<string, { label: string; bg: string; text: string; border: string }> = {
+      BAKER: { label: '🥖 Baker', bg: 'bg-amber-50', text: 'text-amber-800', border: 'border-amber-200' },
+      CAKE_WORKER: { label: '🎂 Cake Worker', bg: 'bg-pink-50', text: 'text-pink-800', border: 'border-pink-200' },
+      SAMBUSA_WORKER: { label: '🥟 Sambusa Worker', bg: 'bg-orange-50', text: 'text-orange-800', border: 'border-orange-200' },
+    };
+    const info = meta[role] || { label: role, bg: 'bg-zinc-100', text: 'text-zinc-800', border: 'border-zinc-200' };
+    return (
+      <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-bold border ${info.bg} ${info.text} ${info.border}`}>
+        {info.label}
+      </span>
+    );
+  };
+
+  const handleCreate = async (e: React.FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    setIsSubmitting(true);
+    const formData = new FormData(e.currentTarget);
+    const catType = formData.get("type");
+    const prodRole = formData.get("productionRole");
+
+    if (catType === "PRODUCED" && (!prodRole || prodRole === "")) {
+      setIsSubmitting(false);
+      return toast.error(t('categories.toastRoleRequiredForProduced'));
+    }
+
+    try {
+      await api.post("/product-categories", {
+        name: formData.get("name"),
+        nameLatin: (formData.get("nameLatin") as string)?.trim() || undefined,
+        type: catType,
+        parentId: null,
+        productionRole: prodRole && prodRole !== "" ? prodRole : null,
+      });
+      toast.success(t('categories.toastCategoryCreated'));
+      setIsCategoryOpen(false);
+      queryClient.invalidateQueries({ queryKey: ["product-categories"] });
+      queryClient.invalidateQueries({ queryKey: ["products"] });
+    } catch (e: any) {
+      toast.error(e.response?.data?.error || "Error");
+      console.error(e);
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const openEditModal = (cat: Category) => {
+    setEditingCategory(cat);
+    setEditParentId(cat.parentId || "");
+  };
+
+  const handleEdit = async (e: React.FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    if (!editingCategory) return;
+    setIsSubmitting(true);
+    const formData = new FormData(e.currentTarget);
+    const isSubcategory = Boolean(editingCategory.parentId);
+
+    const parentId = isSubcategory ? (editParentId || null) : null;
+    const parentCat = parentId ? rootCategories.find((c) => c.id === parentId) : null;
+    const type = isSubcategory
+      ? (parentCat ? parentCat.type : editingCategory.type)
+      : formData.get("type");
+    const prodRole = formData.get("productionRole");
+
+    if (type === "PRODUCED" && (!prodRole || prodRole === "")) {
+      setIsSubmitting(false);
+      return toast.error(t('categories.toastRoleRequiredForProduced'));
+    }
+
+    try {
+      await api.patch(`/product-categories/${editingCategory.id}`, {
+        name: formData.get("name"),
+        nameLatin: (formData.get("nameLatin") as string)?.trim() || undefined,
+        type,
+        parentId,
+        productionRole: prodRole && prodRole !== "" ? prodRole : null,
+      });
+      toast.success(isSubcategory ? "Subcategory updated" : "Category updated");
+      setEditingCategory(null);
+      setEditParentId("");
+      queryClient.invalidateQueries({ queryKey: ["product-categories"] });
+      queryClient.invalidateQueries({ queryKey: ["products"] });
+    } catch (e: any) {
+      toast.error(e.response?.data?.error || "Error");
+      console.error(e);
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const [categoryToDelete, setCategoryToDelete] = useState<Category | null>(null);
+
+  const confirmDeleteCategory = async () => {
+    if (!categoryToDelete) return;
+    try {
+      await api.delete(`/product-categories/${categoryToDelete.id}`);
+      toast.success(t('categories.toastCategoryDeleted'));
+      queryClient.invalidateQueries({ queryKey: ["product-categories"] });
+      queryClient.invalidateQueries({ queryKey: ["products"] });
+    } catch (e: any) {
+      toast.error(e.response?.data?.error || "Error");
+      console.error(e);
+    } finally {
+      setCategoryToDelete(null);
+    }
+  };
+
+  const rootCategories = categories.filter((category) => category.parentId === null);
+  const subcategories = categories.filter((category) => category.parentId !== null);
+  const editSelectedParent = rootCategories.find((category) => category.id === editParentId) || null;
+  const subParent = rootCategories.find((category) => category.id === subParentId) || null;
+
+  const getCategoryNameById = (id: string | null) => {
+    if (!id) return null;
+    return categories.find((category) => category.id === id)?.name ?? null;
+  };
+
+  const getChildCount = (id: string) => categories.filter((category) => category.parentId === id).length;
+
+  return (
+    <DashboardLayout>
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-6">
+        <div>
+          <h1 className="text-2xl font-extrabold tracking-tight text-[#2C1B10]">{t('categories.title')}</h1>
+        </div>
+        {canManage && (
+          <div className="flex flex-wrap sm:flex-nowrap gap-2 w-full sm:w-auto">
+            <Button
+              variant="outline"
+              className="flex-1 sm:flex-initial h-10 border-[#EDE4D5] hover:bg-[#FAF6F0] font-bold text-xs sm:text-sm text-[#4A2E1B]"
+              onClick={() => setIsSubcategoryOpen(true)}
+            >
+              {t('categories.addSubcategory')}
+            </Button>
+            <Button
+              className="flex-1 sm:flex-initial h-10 bg-[#4A2E1B] hover:bg-[#3D2314] text-white font-bold text-xs sm:text-sm shadow-sm"
+              onClick={() => setIsCategoryOpen(true)}
+            >
+              {t('categories.newCategory')}
+            </Button>
+          </div>
+        )}
+      </div>
+
+      {canManage && (
+        <Dialog open={isCategoryOpen} onOpenChange={setIsCategoryOpen}>
+          <DialogContent className="max-w-md">
+            <DialogHeader>
+              <DialogTitle className="text-lg font-extrabold text-[#2C1B10]">{t('categories.addCategoryTitle')}</DialogTitle>
+            </DialogHeader>
+            <form onSubmit={handleCreate}>
+              <div className="space-y-4 mb-4">
+                <div>
+                  <label className="text-xs font-semibold text-[#2C1B10] block mb-1">{t('categories.colCategoryName')} (Ge'ez / በግዕዝ)</label>
+                  <Input name="name" required placeholder={t('categories.categoryAmharicPlaceholder')} className="h-10" />
+                </div>
+                <div>
+                  <label className="text-xs font-semibold text-[#2C1B10] block mb-1">{t('categories.colCategoryName')} (Latin / በላቲን)</label>
+                  <Input name="nameLatin" placeholder={t('categories.categoryEnglishPlaceholder')} className="h-10 font-mono" />
+                </div>
+                <div>
+                  <label className="text-xs font-semibold text-[#2C1B10] mb-1 block">{t('categories.colProductType')}</label>
+                  <select name="type" required className="w-full border rounded-md h-10 px-3 border-input bg-background text-sm">
+                    <option value="PRODUCED">{t('products.typeProduced') || 'PRODUCED'}</option>
+                    <option value="RESELL">{t('products.typeResell') || 'RESELL'}</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="text-xs font-semibold text-[#2C1B10] mb-1 block">{t('categories.stationRole') || 'Production Station / Role'}</label>
+                  <select name="productionRole" className="w-full border rounded-md h-10 px-3 border-input bg-background text-sm">
+                    <option value="">{t('categories.stationRoleNone') || 'None (All / General)'}</option>
+                    <option value="BAKER">🥖 {t('production.roleBaker') || 'Baker (Bread & Buns)'}</option>
+                    <option value="CAKE_WORKER">🎂 {t('production.roleCakeWorker') || 'Cake Worker (Cakes & Pastries)'}</option>
+                    <option value="SAMBUSA_WORKER">🥟 {t('production.roleSambusaWorker') || 'Sambusa Worker (Hot Snacks)'}</option>
+                  </select>
+                  <p className="mt-1 text-[11px] text-zinc-500">{t('categories.stationRoleDesc') || 'Scopes production batches for workers with this role.'}</p>
+                </div>
+              </div>
+              <DialogFooter className="flex flex-col sm:flex-row gap-2 w-full pt-2">
+                <Button
+                  type="submit"
+                  disabled={isSubmitting}
+                  className="w-full sm:w-auto h-11 sm:h-10 bg-[#4A2E1B] text-white hover:bg-[#3D2314] font-bold order-1 sm:order-2 shadow-sm"
+                >
+                  {isSubmitting ? t('common.loading') : t('categories.newCategory')}
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="w-full sm:w-auto h-10 border-[#EDE4D5] hover:bg-[#FAF6F0] order-2 sm:order-1"
+                  onClick={() => setIsCategoryOpen(false)}
+                >
+                  {t('common.cancel')}
+                </Button>
+              </DialogFooter>
+            </form>
+          </DialogContent>
+        </Dialog>
+      )}
+
+      {canManage && (
+        <Dialog open={isSubcategoryOpen} onOpenChange={setIsSubcategoryOpen}>
+          <DialogContent className="max-w-md">
+            <DialogHeader>
+              <DialogTitle className="text-lg font-extrabold text-[#2C1B10]">{t('categories.addSubcategoryTitle')}</DialogTitle>
+            </DialogHeader>
+            <form
+              onSubmit={async (event) => {
+                event.preventDefault();
+                if (!subParent) {
+                  toast.error(t('categories.toastSelectParentCategory'));
+                  return;
+                }
+                setIsSubmitting(true);
+                const formData = new FormData(event.currentTarget);
+                try {
+                  await api.post("/product-categories", {
+                    name: formData.get("name"),
+                    nameLatin: (formData.get("nameLatin") as string)?.trim() || undefined,
+                    type: subParent.type,
+                    parentId: subParent.id,
+                  });
+                  toast.success(t('categories.toastSubcategoryCreated'));
+                  setIsSubcategoryOpen(false);
+                  setSubParentId("");
+                  queryClient.invalidateQueries({ queryKey: ["product-categories"] });
+                  queryClient.invalidateQueries({ queryKey: ["products"] });
+                } catch (e: any) {
+                  toast.error(e.response?.data?.error || "Error");
+                  console.error(e);
+                } finally {
+                  setIsSubmitting(false);
+                }
+              }}
+            >
+              <div className="space-y-4 mb-4">
+                <div>
+                  <label className="text-xs font-semibold text-[#2C1B10] block mb-1">{t('categories.colCategoryName')} (Ge'ez / በግዕዝ)</label>
+                  <Input name="name" required placeholder={t('categories.subcategoryAmharicPlaceholder')} className="h-10" />
+                </div>
+                <div>
+                  <label className="text-xs font-semibold text-[#2C1B10] block mb-1">{t('categories.colCategoryName')} (Latin / በላቲን)</label>
+                  <Input name="nameLatin" placeholder={t('categories.subcategoryEnglishPlaceholder')} className="h-10 font-mono" />
+                </div>
+                <div>
+                  <label className="text-xs font-semibold text-[#2C1B10] mb-1 block">{t('categories.colParentCategory')}</label>
+                  <select
+                    name="parentId"
+                    required
+                    value={subParentId}
+                    onChange={(event) => setSubParentId(event.target.value)}
+                    className="w-full border rounded-md h-10 px-3 border-input bg-background text-sm"
+                  >
+                    <option value="">{t('categories.selectParentCategory') || 'Select a parent category'}</option>
+                    {rootCategories.map((category) => (
+                      <option key={category.id} value={category.id}>
+                        {category.name} ({category.type === 'PRODUCED' ? (t('products.typeProduced') || 'PRODUCED') : (t('products.typeResell') || 'RESELL')})
+                      </option>
+                    ))}
+                  </select>
+                  {rootCategories.length === 0 && (
+                    <p className="mt-2 text-xs text-zinc-500">{t('categories.createTopLevelCategoryFirst') || 'Create a top-level category first, then add subcategories under it.'}</p>
+                  )}
+                </div>
+                <div>
+                  <label className="text-xs font-semibold text-[#2C1B10] mb-1 block">{t('categories.colProductType')}</label>
+                  <Input value={subParent?.type || ""} readOnly placeholder={t('categories.inheritedRolePlaceholder')} className="h-10 bg-zinc-50" />
+                </div>
+              </div>
+              <DialogFooter className="flex flex-col sm:flex-row gap-2 w-full pt-2">
+                <Button
+                  type="submit"
+                  disabled={isSubmitting || !subParent}
+                  className="w-full sm:w-auto h-11 sm:h-10 bg-[#4A2E1B] text-white hover:bg-[#3D2314] font-bold order-1 sm:order-2 shadow-sm"
+                >
+                  {isSubmitting ? t('common.loading') : t('categories.addSubcategory')}
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="w-full sm:w-auto h-10 border-[#EDE4D5] hover:bg-[#FAF6F0] order-2 sm:order-1"
+                  onClick={() => setIsSubcategoryOpen(false)}
+                >
+                  {t('common.cancel')}
+                </Button>
+              </DialogFooter>
+            </form>
+          </DialogContent>
+        </Dialog>
+      )}
+
+      {/* Main Categories Section (Root Categories Only) */}
+      <div className="mb-8">
+        <div className="bg-white border border-[#EDE4D5] rounded-2xl overflow-hidden shadow-xs">
+          <div className="px-5 py-3.5 border-b border-[#EDE4D5] bg-[#FAF6F0] flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <span className="text-base">📁</span>
+              <h2 className="text-sm font-extrabold text-[#2C1B10] uppercase tracking-wider">{t('categories.title')}</h2>
+            </div>
+            <span className="text-xs font-bold text-[#8C7361] bg-white px-2.5 py-1 rounded-full border border-[#EDE4D5]">
+              {t('common.totalItems', { count: rootCategories.length }) || `${rootCategories.length} total`}
+            </span>
+          </div>
+
+          {isLoading ? (
+            <div className="p-4">
+              <TableSkeleton rows={4} columns={5} hasActions={true} />
+            </div>
+          ) : (
+            <>
+              {/* Mobile Cards for Categories (md:hidden) */}
+              <div className="block md:hidden p-3 space-y-3">
+                {rootCategories.length === 0 ? (
+                  <div className="text-center py-8 text-[#8C7361]">
+                    {t('categories.noCategories')}
+                  </div>
+                ) : rootCategories.map((cat) => (
+                  <div key={cat.id} className="bg-[#FCFAF8] border border-[#EDE4D5] rounded-2xl p-4 shadow-xs">
+                    <div className="flex items-start justify-between gap-2">
+                      <div>
+                        <h3 className="font-extrabold text-base text-[#2C1B10]">{getItemName(cat)}</h3>
+                        {cat.productionRole && (
+                          <div className="mt-1">
+                            {renderRoleBadge(cat.productionRole)}
+                          </div>
+                        )}
+                      </div>
+                      <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold border ${
+                        cat.type === 'PRODUCED' ? 'bg-blue-100 text-blue-800 border-blue-200' : 'bg-purple-100 text-purple-800 border-purple-200'
+                      }`}>
+                        {cat.type}
+                      </span>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-2 mt-3 pt-2.5 border-t border-[#F4ECE1] bg-white rounded-xl p-2 text-center text-xs">
+                      <div>
+                        <span className="block text-[10px] uppercase font-bold text-[#8C7361]">{t('common.products')}</span>
+                        <strong className="text-base text-[#2C1B10] font-mono">{cat._count?.products || 0}</strong>
+                      </div>
+                      <div>
+                        <span className="block text-[10px] uppercase font-bold text-[#8C7361]">{t('categories.colSubcategories')}</span>
+                        <strong className="text-base text-[#8C7361] font-mono">{getChildCount(cat.id)}</strong>
+                      </div>
+                    </div>
+
+                    {canManage && (
+                      <div className="mt-3 pt-2 border-t border-[#F4ECE1] flex items-center gap-2">
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="flex-1 h-9 font-bold text-xs text-[#4A2E1B] border-[#EDE4D5] hover:bg-[#FAF6F0]"
+                          onClick={() => openEditModal(cat)}
+                        >
+                          {t('common.edit')}
+                        </Button>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="flex-1 h-9 font-bold text-xs text-rose-600 border-rose-200 hover:bg-rose-50"
+                          onClick={() => setCategoryToDelete(cat)}
+                        >
+                          {t('common.delete')}
+                        </Button>
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+
+              {/* Desktop Table for Categories (hidden md:block) */}
+              <div className="hidden md:block">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>{t('categories.colCategoryName')}</TableHead>
+                      <TableHead>{t('categories.colProductType')}</TableHead>
+                      <TableHead>{t('categories.stationRole') || 'Station / Role'}</TableHead>
+                      <TableHead className="text-center">{t('categories.colProductsCount')}</TableHead>
+                      <TableHead className="text-center">{t('categories.colSubcategories')}</TableHead>
+                      <TableHead className="text-right pr-6">{t('common.actions')}</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {rootCategories.length === 0 ? (
+                      <TableRow><TableCell colSpan={6} className="text-center py-8 text-[#8C7361]">{t('categories.noCategories')}</TableCell></TableRow>
+                    ) : rootCategories.map((cat) => (
+                  <TableRow key={cat.id}>
+                    <TableCell className="font-bold text-[#2C1B10]">
+                      {getItemName(cat)}
+                    </TableCell>
+                    <TableCell>
+                      <span className={`px-2.5 py-1 rounded-full text-xs font-bold ${cat.type === 'PRODUCED' ? 'bg-blue-100 text-blue-800 border-blue-200' : 'bg-purple-100 text-purple-800 border-purple-200'}`}>
+                        {cat.type}
+                      </span>
+                    </TableCell>
+                    <TableCell>
+                      {renderRoleBadge(cat.productionRole)}
+                    </TableCell>
+                    <TableCell className="text-center font-bold text-[#2C1B10]">{cat._count?.products || 0}</TableCell>
+                    <TableCell className="text-center font-bold text-[#8C7361]">{getChildCount(cat.id)}</TableCell>
+                    <TableCell className="text-right pr-6 space-x-1">
+                      {canManage && (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="font-bold text-xs text-[#4A2E1B] hover:text-[#E87A18] hover:bg-[#FAF6F0]"
+                          onClick={() => openEditModal(cat)}
+                        >
+                          {t('common.edit')}
+                        </Button>
+                      )}
+                      {canManage && (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="font-bold text-xs text-rose-600 hover:text-rose-700 hover:bg-rose-50"
+                          onClick={() => setCategoryToDelete(cat)}
+                        >
+                          {t('common.delete')}
+                        </Button>
+                      )}
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </div>
+        </>
+      )}
+        </div>
+      </div>
+
+      {/* Subcategories Overview Section (Subcategories Only with Parent Category) */}
+      <div className="bg-white border border-[#EDE4D5] rounded-2xl overflow-hidden shadow-xs">
+        <div className="px-5 py-3.5 border-b border-[#EDE4D5] bg-[#FAF6F0] flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <span className="text-base text-[#E87A18]">↳</span>
+            <h2 className="text-sm font-extrabold text-[#2C1B10] uppercase tracking-wider">{t('categories.subcategoriesOverview')}</h2>
+          </div>
+          <span className="text-xs font-bold text-[#8C7361] bg-white px-2.5 py-1 rounded-full border border-[#EDE4D5]">
+            {t('common.totalItems', { count: subcategories.length }) || `${subcategories.length} total`}
+          </span>
+        </div>
+        {isLoading ? (
+          <div className="p-4">
+            <TableSkeleton rows={4} columns={5} hasActions={true} />
+          </div>
+        ) : subcategories.length === 0 ? (
+          <div className="px-4 py-8 text-center text-[#8C7361] font-medium">{t('categories.noSubcategories') || "No subcategories found. Click '+ Add Subcategory' to create one under a parent category."}</div>
+        ) : (
+          <>
+            {/* Mobile Cards for Subcategories (md:hidden) */}
+            <div className="block md:hidden divide-y divide-[#EDE4D5]">
+              {subcategories.map((cat) => (
+                <div key={cat.id} className="p-4 space-y-2">
+                  <div className="flex items-start justify-between">
+                    <div>
+                      <h4 className="font-bold text-sm text-[#2C1B10]">↳ {getItemName(cat)}</h4>
+                      <p className="text-xs text-[#8C7361] mt-0.5">
+                        {t('categories.colParentCategory')}:{" "}
+                        <span className="font-bold text-[#2C1B10] bg-amber-50 border border-amber-200 px-1.5 py-0.5 rounded text-[11px]">
+                          {getItemName(cat.parent) || getCategoryNameById(cat.parentId) || "—"}
+                        </span>
+                      </p>
+                    </div>
+                    <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold border ${
+                      cat.type === 'PRODUCED' ? 'bg-blue-100 text-blue-800 border-blue-200' : 'bg-purple-100 text-purple-800 border-purple-200'
+                    }`}>
+                      {cat.type}
+                    </span>
+                  </div>
+                  <div className="text-xs text-[#8C7361] pt-1">
+                    {t('categories.assignedProducts')}: <strong className="text-[#2C1B10] font-mono">{cat._count?.products || 0}</strong>
+                  </div>
+                  {canManage && (
+                    <div className="flex gap-2 pt-1">
+                      <Button variant="outline" size="sm" className="flex-1 h-8 text-xs font-bold text-[#4A2E1B] border-[#EDE4D5]" onClick={() => openEditModal(cat)}>{t('common.edit')}</Button>
+                      <Button variant="outline" size="sm" className="flex-1 h-8 text-xs font-bold text-rose-600 border-rose-200 hover:bg-rose-50" onClick={() => setCategoryToDelete(cat)}>{t('common.delete')}</Button>
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+
+            {/* Desktop Table for Subcategories (hidden md:block) */}
+            <div className="hidden md:block">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>{t('categories.colCategoryName') || 'Category Name'}</TableHead>
+                    <TableHead>{t('categories.colParentCategory')}</TableHead>
+                    <TableHead>{t('categories.colProductType')}</TableHead>
+                    <TableHead>{t('categories.stationRole') || 'Station / Role'}</TableHead>
+                    <TableHead className="text-center">{t('categories.assignedProducts')}</TableHead>
+                    <TableHead className="text-right pr-6">{t('common.actions')}</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {subcategories.map((cat) => (
+                    <TableRow key={cat.id}>
+                      <TableCell className="font-bold text-[#2C1B10] pl-6">↳ {getItemName(cat)}</TableCell>
+                      <TableCell>
+                        <span className="inline-flex items-center gap-1 font-bold text-xs text-[#2C1B10] bg-amber-50 border border-amber-200 px-2.5 py-1 rounded-full">
+                          📁 {getItemName(cat.parent) || getCategoryNameById(cat.parentId) || "—"}
+                        </span>
+                      </TableCell>
+                      <TableCell>
+                        <span className={`px-2.5 py-1 rounded-full text-xs font-bold ${cat.type === 'PRODUCED' ? 'bg-blue-100 text-blue-800 border-blue-200' : 'bg-purple-100 text-purple-800 border-purple-200'}`}>
+                          {cat.type}
+                        </span>
+                      </TableCell>
+                      <TableCell>
+                        {renderRoleBadge(cat.productionRole || (cat.parent as any)?.productionRole)}
+                      </TableCell>
+                      <TableCell className="text-center font-bold text-[#2C1B10]">{cat._count?.products || 0}</TableCell>
+                      <TableCell className="text-right pr-6 space-x-1">
+                        {canManage && (
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="font-bold text-xs text-[#4A2E1B] hover:text-[#E87A18] hover:bg-[#FAF6F0]"
+                            onClick={() => openEditModal(cat)}
+                          >
+                            {t('common.edit')}
+                          </Button>
+                        )}
+                        {canManage && (
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="font-bold text-xs text-rose-600 hover:text-rose-700 hover:bg-rose-50"
+                            onClick={() => setCategoryToDelete(cat)}
+                          >
+                            {t('common.delete')}
+                          </Button>
+                        )}
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
+          </>
+        )}
+      </div>
+
+      {canManage && (
+        <Dialog open={!!editingCategory} onOpenChange={(open) => !open && setEditingCategory(null)}>
+          <DialogContent className="max-w-md">
+            <DialogHeader>
+              <DialogTitle className="text-lg font-extrabold text-[#2C1B10]">
+                {t('common.edit')} {editingCategory?.parentId ? t('categories.subcategory') : t('categories.colCategoryName')}
+              </DialogTitle>
+            </DialogHeader>
+            {editingCategory && (
+              <form onSubmit={handleEdit} key={editingCategory.id}>
+                <div className="space-y-4 mb-4">
+                  <div>
+                    <label className="text-xs font-semibold text-[#2C1B10] block mb-1">
+                      {editingCategory.parentId ? `${t('categories.subcategory')} Name (Ge'ez / በግዕዝ)` : `${t('categories.colCategoryName')} (Ge'ez / በግዕዝ)`}
+                    </label>
+                    <Input name="name" required defaultValue={editingCategory.name} className="h-10" />
+                  </div>
+
+                  <div>
+                    <label className="text-xs font-semibold text-[#2C1B10] block mb-1">
+                      {editingCategory.parentId ? `${t('categories.subcategory')} Name (Latin / በላቲን)` : `${t('categories.colCategoryName')} (Latin / በላቲን)`}
+                    </label>
+                    <Input name="nameLatin" defaultValue={editingCategory.nameLatin || ""} placeholder={t('categories.subcategoryEnglishPlaceholder')} className="h-10 font-mono" />
+                  </div>
+
+                  {editingCategory.parentId ? (
+                    <>
+                      <div>
+                        <label className="text-xs font-semibold text-[#2C1B10] mb-1 block">{t('categories.colParentCategory')}</label>
+                        <select
+                          name="parentId"
+                          required
+                          value={editParentId}
+                          onChange={(event) => setEditParentId(event.target.value)}
+                          className="w-full border rounded-md h-10 px-3 border-input bg-background text-sm"
+                        >
+                          <option value="" disabled>{t('categories.selectParentCategory') || 'Select parent category'}</option>
+                          {rootCategories.map((category) => (
+                            <option key={category.id} value={category.id}>
+                              {category.name} ({category.type})
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                      <div>
+                        <label className="text-xs font-semibold text-[#2C1B10] mb-1 block">{t('categories.colProductType')}</label>
+                        <Input
+                          value={editSelectedParent?.type || editingCategory.type}
+                          readOnly
+                          className="h-10 bg-zinc-50 font-bold"
+                        />
+                        <p className="mt-1 text-[11px] text-zinc-500">{t('categories.autoInheritedFromParent') || 'Auto-inherited from parent category.'}</p>
+                      </div>
+                    </>
+                  ) : (
+                    <div>
+                      <label className="text-xs font-semibold text-[#2C1B10] mb-1 block">{t('categories.colProductType')}</label>
+                      <select
+                        name="type"
+                        required
+                        defaultValue={editingCategory.type}
+                        className="w-full border rounded-md h-10 px-3 border-input bg-background text-sm"
+                      >
+                        <option value="PRODUCED">{t('products.typeProduced') || 'PRODUCED'}</option>
+                        <option value="RESELL">{t('products.typeResell') || 'RESELL'}</option>
+                      </select>
+                    </div>
+                  )}
+
+                  <div>
+                    <label className="text-xs font-semibold text-[#2C1B10] mb-1 block">{t('categories.stationRole') || 'Production Station / Role'}</label>
+                    <select
+                      name="productionRole"
+                      defaultValue={editingCategory.productionRole || ""}
+                      className="w-full border rounded-md h-10 px-3 border-input bg-background text-sm"
+                    >
+                      <option value="">{t('categories.stationRoleNone') || 'None (All / General)'}</option>
+                      <option value="BAKER">🥖 {t('production.roleBaker') || 'Baker (Bread & Buns)'}</option>
+                      <option value="CAKE_WORKER">🎂 {t('production.roleCakeWorker') || 'Cake Worker (Cakes & Pastries)'}</option>
+                      <option value="SAMBUSA_WORKER">🥟 {t('production.roleSambusaWorker') || 'Sambusa Worker (Hot Snacks)'}</option>
+                    </select>
+                    <p className="mt-1 text-[11px] text-zinc-500">{t('categories.stationRoleDesc') || 'Scopes production batches for workers with this role.'}</p>
+                  </div>
+                </div>
+                <DialogFooter className="flex flex-col sm:flex-row gap-2 w-full pt-2">
+                  <Button
+                    type="submit"
+                    disabled={isSubmitting}
+                    className="w-full sm:w-auto h-11 sm:h-10 bg-[#4A2E1B] text-white hover:bg-[#3D2314] font-bold order-1 sm:order-2 shadow-sm"
+                  >
+                    {isSubmitting ? t('common.loading') : t('common.save')}
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    className="w-full sm:w-auto h-10 border-[#EDE4D5] hover:bg-[#FAF6F0] order-2 sm:order-1"
+                    onClick={() => {
+                      setEditingCategory(null);
+                      setEditParentId("");
+                    }}
+                  >
+                    {t('common.cancel')}
+                  </Button>
+                </DialogFooter>
+              </form>
+            )}
+          </DialogContent>
+        </Dialog>
+      )}
+
+      {/* Delete Category Confirmation Modal */}
+      <ConfirmModal
+        isOpen={!!categoryToDelete}
+        onClose={() => setCategoryToDelete(null)}
+        onConfirm={confirmDeleteCategory}
+        title={t('categories.deleteCategoryTitle') || "Delete Product Category"}
+        description={t('categories.confirmDeleteCategory', { name: categoryToDelete?.name || '' }) || `Are you sure you want to delete '${categoryToDelete?.name}'? This action cannot be undone.`}
+        confirmText={t('categories.deleteCategoryBtn') || "Delete Category"}
+        variant="danger"
+      />
+    </DashboardLayout>
+  );
+}

@@ -1,0 +1,125 @@
+import { Router, Response } from 'express';
+import { authMiddleware, requireRole, type AuthRequest } from '../../middleware/auth.js';
+import { DailySessionsService } from './daily-sessions.service.js';
+import { parsePagination } from '../../lib/pagination.js';
+
+export const dailySessionsRouter = Router();
+const dailySessionsService = new DailySessionsService();
+
+dailySessionsRouter.use(authMiddleware);
+
+dailySessionsRouter.get('/', requireRole('OWNER', 'ADMIN'), async (req: AuthRequest, res: Response) => {
+  const branchId = (req.query.branchId as string) || (req.user?.role === 'OWNER' ? undefined : req.user?.branchId);
+  const from = req.query.from as string;
+  const to = req.query.to as string;
+  const status = req.query.status as string | undefined;
+  const pagination = req.query.page ? parsePagination(req.query as Record<string, unknown>, 15) : undefined;
+
+  const result = await dailySessionsService.getDailySessions({
+    branchId,
+    from,
+    to,
+    status,
+    page: pagination?.page,
+    limit: pagination?.limit,
+  });
+  if (result.error) {
+    return res.status(result.status || 500).json({ error: result.error });
+  }
+  res.json(result.data);
+});
+
+dailySessionsRouter.get('/by-date', requireRole('OWNER', 'ADMIN'), async (req: AuthRequest, res: Response) => {
+  const branchId = (req.query.branchId as string) || req.user?.branchId;
+  const date = req.query.date as string;
+  if (!branchId || !date) {
+    return res.status(400).json({ error: 'branchId and date are required' });
+  }
+  const result = await dailySessionsService.getOrCreateSessionForDate(branchId, date);
+  if (result.error) {
+    return res.status(result.status || 500).json({ error: result.error });
+  }
+  res.json(result.data);
+});
+
+dailySessionsRouter.get('/active', requireRole('OWNER', 'ADMIN', 'BAKER', 'CAKE_WORKER', 'CASHIER', 'SAMBUSA_WORKER', 'EMPLOYEE'), async (req: AuthRequest, res: Response) => {
+  const branchId = (req.query.branchId as string) || req.user?.branchId;
+  const result = await dailySessionsService.getActiveSession(branchId);
+  if (result.error) {
+    return res.status(result.status || 500).json({ error: result.error });
+  }
+  res.json(result.data);
+});
+
+dailySessionsRouter.get('/active/available-products', requireRole('OWNER', 'ADMIN', 'BAKER', 'CAKE_WORKER', 'CASHIER', 'SAMBUSA_WORKER', 'EMPLOYEE'), async (req: AuthRequest, res: Response) => {
+  const branchId = (req.query.branchId as string) || req.user?.branchId;
+  const result = await dailySessionsService.getInShopAvailableProducts(branchId);
+  if (result.error) {
+    return res.status(result.status || 500).json({ error: result.error });
+  }
+  res.json(result.data);
+});
+
+dailySessionsRouter.get('/:id', requireRole('OWNER', 'ADMIN'), async (req, res: Response) => {
+  const result = await dailySessionsService.getDailySessionById(req.params.id);
+  if (result.error) {
+    return res.status(result.status || 500).json({ error: result.error });
+  }
+  res.json(result.data);
+});
+
+dailySessionsRouter.post('/', requireRole('OWNER', 'ADMIN'), async (req: AuthRequest, res: Response) => {
+  const result = await dailySessionsService.createDailySession(req.body, req.user?.branchId);
+  if (result.error) {
+    return res.status(result.status || 500).json({ error: result.error });
+  }
+  res.status(201).json(result.data);
+});
+
+dailySessionsRouter.patch('/:id', requireRole('OWNER', 'ADMIN'), async (req: AuthRequest, res: Response) => {
+  const result = await dailySessionsService.updateDailySession(req.params.id, req.body, req.user?.id, req.user?.role);
+  if (result.error) {
+    return res.status(result.status || 500).json({ error: result.error });
+  }
+  res.json(result.data);
+});
+
+dailySessionsRouter.post('/:id/save-draft', requireRole('OWNER', 'ADMIN'), async (req: AuthRequest, res: Response) => {
+  const result = await dailySessionsService.saveSessionDraft(req.params.id, req.body, req.user?.id, req.user?.role);
+  if (result.error) {
+    return res.status(result.status || 500).json({ error: result.error });
+  }
+  res.json(result.data);
+});
+
+dailySessionsRouter.post('/:id/submit-close', requireRole('OWNER', 'ADMIN'), async (req: AuthRequest, res: Response) => {
+  const result = await dailySessionsService.submitCloseRequest(req.params.id, req.body, req.user!.id);
+  if (result.error) {
+    return res.status(result.status || 500).json({ error: result.error });
+  }
+  res.json(result.data);
+});
+
+dailySessionsRouter.post('/:id/finalize', requireRole('OWNER'), async (req: AuthRequest, res: Response) => {
+  const result = await dailySessionsService.finalizeDailySession(req.params.id, req.body, req.user!.id);
+  if (result.error) {
+    return res.status(result.status || 500).json({ error: result.error });
+  }
+  res.json(result.data);
+});
+
+dailySessionsRouter.post('/:id/reopen', requireRole('OWNER'), async (req: AuthRequest, res: Response) => {
+  const result = await dailySessionsService.reopenDailySession(req.params.id);
+  if (result.error) {
+    return res.status(result.status || 500).json({ error: result.error });
+  }
+  res.json(result.data);
+});
+
+dailySessionsRouter.delete('/:id', requireRole('OWNER'), async (req, res: Response) => {
+  const result = await dailySessionsService.deleteDailySession(req.params.id);
+  if (result.error) {
+    return res.status(result.status || 500).json({ error: result.error });
+  }
+  res.json(result.data);
+});

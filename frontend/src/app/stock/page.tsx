@@ -1,0 +1,1830 @@
+"use client";
+import { useEffect, useState, useCallback } from "react";
+import Link from "next/link";
+import { useRouter } from "next/navigation";
+import { api } from "@/lib/axios";
+import { toast } from "sonner";
+import DashboardLayout from "@/components/DashboardLayout";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
+import { useAuth } from "@/context/AuthContext";
+import { useBranch } from "@/context/BranchContext";
+import { useLanguage } from "@/context/LanguageContext";
+import { AlertCircle, MinusCircle, PlusCircle, Plus, Trash2, Edit3, PackageCheck, History, SlidersHorizontal, CheckCircle2, Home, Store, Lock } from "lucide-react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { TableSkeleton } from "@/components/ui/skeletons";
+
+import ConfirmModal from "@/components/ConfirmModal";
+import { AppDatePicker } from "@/components/AppDatePicker";
+
+interface Branch {
+  id: string;
+  name: string;
+}
+
+interface StockItem {
+  id: string;
+  name: string;
+  nameLatin?: string | null;
+  category?: string | null;
+  categoryLatin?: string | null;
+  unitType: "PIECE" | "KG" | "LITER" | "GRAM";
+  currentQuantity: number;
+  unitPrice?: number;
+  minStockLevel?: number;
+  branchId: string;
+  branch?: Branch;
+  location?: "MAIN" | "HOME";
+}
+
+export const STOCK_CATEGORIES = [
+  { name: 'መሰረታዊ ጥሬ እቃዎች', nameLatin: 'Meseretawi T\'ire Ekawoch' },
+  { name: 'ክሬም፣ ግሌዝ እና ፍሌቨር', nameLatin: 'Cream, Glaze ena Flavor' },
+  { name: 'የሳምቡሳ ግብዓቶች እና የምግብ ዘይት', nameLatin: 'Ye Sambusa Gib\'atoch ena Ye Migib Zeyt' },
+  { name: 'ሳጥኖች፣ ሰሌዳዎች እና ፓኬጂንግ', nameLatin: 'Sat\'inoch, Seledawoch ena Packaging' },
+  { name: 'የጽዳት እቃዎች እና ነዳጅ', nameLatin: 'Ye Tsedat Ekawoch ena Nedaj' },
+];
+
+export default function StockPage() {
+  const router = useRouter();
+  const { user } = useAuth();
+  const { selectedBranchId, branches } = useBranch();
+  const { t, language, getItemName } = useLanguage();
+  const isOwner = user?.role === "OWNER";
+  const isGlobalAdmin = user?.role === "ADMIN" || isOwner;
+  const isStockKeeper = user?.role === "STOCK_KEEPER";
+  const isStockStaff = isGlobalAdmin || isStockKeeper;
+
+  useEffect(() => {
+    if (user && !isStockStaff) {
+      toast.error(t("stock.toastRestrictedStock"));
+      router.replace("/my-profile");
+    }
+  }, [user, isStockStaff, router]);
+
+  const queryClient = useQueryClient();
+  const [isAddOpen, setIsAddOpen] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [editingItem, setEditingItem] = useState<StockItem | null>(null);
+
+  if (user && !isStockStaff) {
+    return null;
+  }
+
+  // Stock Location Scope (Bakery Workspace vs Private Home)
+  const [activeLocation, setActiveLocation] = useState<'MAIN' | 'HOME'>('MAIN');
+  const effectiveLocation = isOwner ? activeLocation : 'MAIN';
+
+  // Quick Filters
+  const [filterToday, setFilterToday] = useState(false);
+  const [filterLowStock, setFilterLowStock] = useState(false);
+  const [selectedCategory, setSelectedCategory] = useState<string>("ALL");
+  const [searchTerm, setSearchTerm] = useState("");
+
+  // Manual stock addition modal state
+  const [addingItem, setAddingItem] = useState<StockItem | null>(null);
+  const [addAmount, setAddAmount] = useState<string>("");
+  const [addUnitPrice, setAddUnitPrice] = useState<string>("");
+  const [addReason, setAddReason] = useState<string>("");
+  const [addDate, setAddDate] = useState<string>(() => new Date().toISOString().split('T')[0]);
+  const [createDate, setCreateDate] = useState<string>(() => new Date().toISOString().split('T')[0]);
+  const [isAutoConfirm, setIsAutoConfirm] = useState<boolean>(false);
+
+  const openAddStockModal = (item: StockItem) => {
+    if (!isStockStaff) return;
+    setAddingItem(item);
+    setAddAmount("");
+    setAddUnitPrice(item.unitPrice != null ? String(item.unitPrice) : "");
+    setAddReason("");
+    setAddDate(new Date().toISOString().split('T')[0]);
+    setIsAddLoan(false);
+    setAddPaidAmount("");
+    setAddSupplierName("");
+    setIsAutoConfirm(false);
+  };
+
+  // Loan state for Creation
+  const [isCreateLoan, setIsCreateLoan] = useState<boolean>(false);
+  const [createPaidAmount, setCreatePaidAmount] = useState<string>("");
+  const [createSupplierName, setCreateSupplierName] = useState<string>("");
+  const [isCreateAutoConfirm, setIsCreateAutoConfirm] = useState<boolean>(false);
+
+  // Loan state for Restock / Addition
+  const [isAddLoan, setIsAddLoan] = useState<boolean>(false);
+  const [addPaidAmount, setAddPaidAmount] = useState<string>("");
+  const [addSupplierName, setAddSupplierName] = useState<string>("");
+
+  // Manual stock reduction modal state
+  const [reducingItem, setReducingItem] = useState<StockItem | null>(null);
+  const [reduceAmount, setReduceAmount] = useState<string>("");
+  const [reduceReason, setReduceReason] = useState<string>("");
+  const [reduceReceivedBy, setReduceReceivedBy] = useState<string>("");
+
+  // Adjustment state for Owner
+  const [adjustingItem, setAdjustingItem] = useState<StockItem | null>(null);
+  const [adjustTo, setAdjustTo] = useState<string>("");
+  const [adjustReason, setAdjustReason] = useState<string>("");
+  const [isAdjusting, setIsAdjusting] = useState<boolean>(false);
+
+  const openAdjustStockModal = (item: StockItem) => {
+    if (!isStockStaff) return;
+    setAdjustingItem(item);
+    setAdjustTo(String(item.currentQuantity));
+    setAdjustReason("");
+  };
+
+  const handleAdjustStock = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!adjustingItem || !isStockStaff) return;
+    const newQty = parseFloat(adjustTo);
+    if (isNaN(newQty) || newQty < 0) {
+      toast.error(t("stock.toastValidCount"));
+      return;
+    }
+    if (!adjustReason.trim()) {
+      toast.error(t("stock.toastReasonRequired"));
+      return;
+    }
+    setIsAdjusting(true);
+    try {
+      await api.post('/stock-movements', {
+        stockItemId: adjustingItem.id,
+        quantity: Math.abs(newQty - Number(adjustingItem.currentQuantity)),
+        adjustTo: newQty,
+        type: 'ADJUSTMENT',
+        reason: adjustReason.trim(),
+      });
+      toast.success(`Inventory successfully adjusted to ${newQty} ${adjustingItem.unitType}`);
+      setAdjustingItem(null);
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['stock-items'] }),
+        queryClient.invalidateQueries({ queryKey: ['stock-movements'] }),
+        queryClient.invalidateQueries({ queryKey: ['stock-summary'] }),
+      ]);
+    } catch (err: any) {
+      toast.error(err.response?.data?.error || t("stock.toastFailedAdjust"));
+    } finally {
+      setIsAdjusting(false);
+    }
+  };
+
+  const { data: pendingApprovals = [] } = useQuery<any[]>({
+    queryKey: ['stock-movements-pending', selectedBranchId],
+    queryFn: async () => {
+      const params = new URLSearchParams({ status: 'PENDING_CONFIRMATION', limit: '50' });
+      if (selectedBranchId) params.append('branchId', selectedBranchId);
+      const res = await api.get(`/stock-movements?${params.toString()}`);
+      if (Array.isArray(res.data)) return res.data;
+      return res.data?.data || [];
+    },
+    enabled: isStockKeeper,
+  });
+
+  const { data: rejectedDeliveries = [] } = useQuery<any[]>({
+    queryKey: ['stock-movements-rejected', selectedBranchId],
+    queryFn: async () => {
+      const params = new URLSearchParams({ status: 'REJECTED', limit: '50' });
+      if (selectedBranchId) params.append('branchId', selectedBranchId);
+      const res = await api.get(`/stock-movements?${params.toString()}`);
+      if (Array.isArray(res.data)) return res.data;
+      return res.data?.data || [];
+    },
+    enabled: isGlobalAdmin,
+  });
+
+  const { data: stockSummary } = useQuery({
+    queryKey: ['stock-summary', selectedBranchId, effectiveLocation],
+    queryFn: async () => {
+      const params = new URLSearchParams();
+      if (selectedBranchId) params.append('branchId', selectedBranchId);
+      params.append('location', effectiveLocation);
+      const res = await api.get(`/stock-movements/summary?${params.toString()}`);
+      return res.data;
+    },
+    enabled: isStockStaff,
+  });
+
+  const { data: items = [], isLoading } = useQuery<StockItem[]>({
+    queryKey: ['stock-items', selectedBranchId, effectiveLocation],
+    placeholderData: (prev) => prev,
+    queryFn: async () => {
+      const params = new URLSearchParams();
+      if (selectedBranchId) params.append('branchId', selectedBranchId);
+      params.append('location', effectiveLocation);
+      const res = await api.get(`/stock-items?${params.toString()}`);
+      return res.data || [];
+    },
+    enabled: isStockStaff,
+  });
+
+  // Fetch bakery catalog items so owner can easily copy details when adding to Home Stock
+  const { data: bakeryCatalogItems = [] } = useQuery<StockItem[]>({
+    queryKey: ['stock-items-bakery-catalog', selectedBranchId],
+    queryFn: async () => {
+      const params = new URLSearchParams();
+      if (selectedBranchId) params.append('branchId', selectedBranchId);
+      params.append('location', 'MAIN');
+      const res = await api.get(`/stock-items?${params.toString()}`);
+      return res.data || [];
+    },
+    enabled: isOwner && effectiveLocation === 'HOME',
+  });
+
+  // Fetch home catalog items so owner can easily copy details when adding to Bakery Stock
+  const { data: homeCatalogItems = [] } = useQuery<StockItem[]>({
+    queryKey: ['stock-items-home-catalog', selectedBranchId],
+    queryFn: async () => {
+      const params = new URLSearchParams();
+      if (selectedBranchId) params.append('branchId', selectedBranchId);
+      params.append('location', 'HOME');
+      const res = await api.get(`/stock-items?${params.toString()}`);
+      return res.data || [];
+    },
+    enabled: isOwner && effectiveLocation === 'MAIN',
+  });
+
+  const { data: dbUsers = [], isLoading: isUsersLoading } = useQuery<{
+    id: string;
+    fullName: string;
+    role: string;
+    branchId: string | null;
+    isActive: boolean;
+    branch?: { name: string } | null;
+  }[]>({
+    queryKey: ['staff-users', selectedBranchId],
+    queryFn: async () => {
+      const res = await api.get('/users', {
+        params: selectedBranchId ? { branchId: selectedBranchId } : {},
+      });
+      return res.data || [];
+    },
+    enabled: isStockStaff,
+  });
+
+  const handleSubmit = async (e: React.FormEvent<HTMLFormElement>, isEdit: boolean) => {
+    e.preventDefault();
+    setIsSubmitting(true);
+    const formData = new FormData(e.currentTarget);
+    const catVal = (formData.get("category") as string) || "";
+    const matchedCat = STOCK_CATEGORIES.find(c => c.name === catVal || c.nameLatin === catVal);
+    const category = matchedCat ? matchedCat.name : (catVal || undefined);
+    const categoryLatin = matchedCat ? matchedCat.nameLatin : (formData.get("categoryLatin") as string || undefined);
+
+    const data = {
+      branchId: (formData.get("branchId") as string) || selectedBranchId || user?.branchId || undefined,
+      location: effectiveLocation,
+      name: formData.get("name"),
+      nameLatin: (formData.get("nameLatin") as string)?.trim() || undefined,
+      category,
+      categoryLatin,
+      unitType: formData.get("unitType"),
+      currentQuantity: Number(formData.get("currentQuantity")),
+      unitPrice: formData.get("unitPrice") ? Number(formData.get("unitPrice")) : 0,
+      minStockLevel: formData.get("minStockLevel") ? Number(formData.get("minStockLevel")) : undefined,
+      date: createDate || undefined,
+      autoConfirm: (effectiveLocation === 'HOME') ? true : isCreateAutoConfirm,
+      loanInfo: !isEdit && isCreateLoan ? {
+        isLoan: true,
+        paidAmount: createPaidAmount !== "" ? Number(createPaidAmount) : 0,
+        supplierName: createSupplierName.trim() || undefined,
+      } : undefined,
+    };
+
+    if (isEdit && !isOwner) {
+      toast.error(t("stock.toastOnlyOwnerEditStock"));
+      return;
+    }
+
+    try {
+      if (isEdit && editingItem) {
+        await api.patch(`/stock-items/${editingItem.id}`, data);
+        toast.success(t("stock.toastStockUpdated"));
+      } else {
+        await api.post("/stock-items", data);
+        if (effectiveLocation === 'HOME' || isCreateAutoConfirm || Number(formData.get("currentQuantity")) === 0) {
+          toast.success(t("stock.toastStockCreated"));
+        } else {
+          toast.success(t('stock.toastInwardAwaitingVerification', { name: formData.get("name") as string }));
+        }
+      }
+      setIsAddOpen(false);
+      setEditingItem(null);
+      setIsCreateLoan(false);
+      setCreatePaidAmount("");
+      setCreateSupplierName("");
+      setIsCreateAutoConfirm(false);
+      queryClient.invalidateQueries({ queryKey: ['stock-items'] });
+      queryClient.invalidateQueries({ queryKey: ['stock-movements'] });
+      queryClient.invalidateQueries({ queryKey: ['stock-movements-pending'] });
+      queryClient.invalidateQueries({ queryKey: ['stock-loans'] });
+      queryClient.invalidateQueries({ queryKey: ['dashboard'] });
+    } catch (error: any) {
+      toast.error(error.response?.data?.error || t("stock.toastErrorSavingStock"));
+      console.error(error);
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const handleAddStock = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!isStockStaff) {
+      toast.error(t("stock.toastOnlyAdminOwnerAddStock"));
+      return;
+    }
+    if (!addingItem) return;
+
+    const qty = parseFloat(addAmount);
+    if (isNaN(qty) || qty <= 0) {
+      toast.error(t("stock.toastValidPositiveQty"));
+      return;
+    }
+
+    const parsedUnitPrice = addUnitPrice !== "" ? parseFloat(addUnitPrice) : undefined;
+    if (parsedUnitPrice !== undefined && (isNaN(parsedUnitPrice) || parsedUnitPrice < 0)) {
+      toast.error(t("stock.toastValidPositivePrice"));
+      return;
+    }
+
+    const isTargetHome = addingItem.location === 'HOME' || effectiveLocation === 'HOME';
+    const effectiveAutoConfirm = (isOwner && isTargetHome) ? true : (isOwner ? isAutoConfirm : false);
+    setIsSubmitting(true);
+    try {
+      await api.post(`/stock-items/${addingItem.id}/add`, {
+        quantity: qty,
+        unitPrice: parsedUnitPrice,
+        reason: addReason.trim() || (isTargetHome ? "Home Stock Addition" : "Manual Stock Addition"),
+        autoConfirm: effectiveAutoConfirm,
+        date: addDate || undefined,
+        loanInfo: isAddLoan ? {
+          isLoan: true,
+          paidAmount: addPaidAmount !== "" ? Number(addPaidAmount) : 0,
+          supplierName: addSupplierName.trim() || undefined,
+        } : undefined,
+      });
+      if (effectiveAutoConfirm) {
+        toast.success(t('stock.toastAddStockSuccess', { qty, unit: addingItem.unitType, name: addingItem.name }));
+      } else {
+        toast.success(t('stock.toastInwardAwaitingVerification', { name: addingItem.name }));
+      }
+      setAddingItem(null);
+      setAddAmount("");
+      setAddUnitPrice("");
+      setAddReason("");
+      setIsAddLoan(false);
+      setAddPaidAmount("");
+      setAddSupplierName("");
+      setIsAutoConfirm(false);
+      queryClient.invalidateQueries({ queryKey: ['stock-items'] });
+      queryClient.invalidateQueries({ queryKey: ['stock-movements'] });
+      queryClient.invalidateQueries({ queryKey: ['stock-movements-pending'] });
+      queryClient.invalidateQueries({ queryKey: ['stock-summary'] });
+      queryClient.invalidateQueries({ queryKey: ['stock-loans'] });
+      queryClient.invalidateQueries({ queryKey: ['dashboard'] });
+    } catch (err: any) {
+      toast.error(err.response?.data?.error || t("stock.toastFailedAddStock"));
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const handleReduceStock = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!reducingItem) return;
+
+    const received = reduceReceivedBy.trim() || (effectiveLocation === 'HOME' ? (user?.fullName || 'Owner') : '');
+    if (!received) {
+      toast.error(t("stock.toastChooseStaff"));
+      return;
+    }
+
+    const qty = parseFloat(reduceAmount);
+    if (isNaN(qty) || qty <= 0) {
+      toast.error(t("stock.toastValidPositiveQty"));
+      return;
+    }
+
+    setIsSubmitting(true);
+    try {
+      await api.post(`/stock-items/${reducingItem.id}/reduce`, {
+        quantity: qty,
+        reason: reduceReason.trim() || (effectiveLocation === 'HOME' ? "Home Stock Reduction" : "Manual Stock Reduction"),
+        receivedBy: received,
+      });
+      toast.success(`Successfully issued ${qty} ${reducingItem.unitType} from ${reducingItem.name}`);
+      setReducingItem(null);
+      setReduceAmount("");
+      setReduceReason("");
+      setReduceReceivedBy("");
+      queryClient.invalidateQueries({ queryKey: ['stock-items'] });
+      queryClient.invalidateQueries({ queryKey: ['stock-movements'] });
+      queryClient.invalidateQueries({ queryKey: ['stock-summary'] });
+      queryClient.invalidateQueries({ queryKey: ['dashboard'] });
+    } catch (err: any) {
+      toast.error(err.response?.data?.error || t("stock.toastFailedReduceStock"));
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const [itemToDelete, setItemToDelete] = useState<StockItem | null>(null);
+
+  const confirmDelete = async () => {
+    if (!itemToDelete) return;
+    if (!isOwner) {
+      toast.error(t("stock.toastOnlyOwnerDeleteStock"));
+      setItemToDelete(null);
+      return;
+    }
+    try {
+      await api.delete(`/stock-items/${itemToDelete.id}`);
+      toast.success(t("stock.toastStockDeleted"));
+      queryClient.invalidateQueries({ queryKey: ['stock-items'] });
+      queryClient.invalidateQueries({ queryKey: ['dashboard'] });
+    } catch (err: any) {
+      toast.error(err.response?.data?.error || t("stock.toastFailedDeleteItem"));
+    } finally {
+      setItemToDelete(null);
+    }
+  };
+
+  const lowStockCount = items.filter(
+    (item) => item.minStockLevel != null && Number(item.currentQuantity) <= Number(item.minStockLevel)
+  ).length;
+
+  const filteredItems = items.filter((item) => {
+    if (filterLowStock) {
+      const isLow = item.minStockLevel != null && Number(item.currentQuantity) <= Number(item.minStockLevel);
+      if (!isLow) return false;
+    }
+    if (selectedCategory !== "ALL") {
+      const matchGeez = item.category === selectedCategory;
+      const matchLatin = item.categoryLatin === selectedCategory;
+      if (!matchGeez && !matchLatin) return false;
+    }
+    if (searchTerm) {
+      const q = searchTerm.toLowerCase();
+      const n = (item.name || '').toLowerCase();
+      const nl = (item.nameLatin || '').toLowerCase();
+      const c = (item.category || '').toLowerCase();
+      const cl = (item.categoryLatin || '').toLowerCase();
+      const u = (item.unitType || '').toLowerCase();
+      if (!n.includes(q) && !nl.includes(q) && !c.includes(q) && !cl.includes(q) && !u.includes(q)) return false;
+    }
+    return true;
+  });
+
+  return (
+    <DashboardLayout>
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 sm:gap-4 mb-6">
+        <div>
+          <h1 className="text-2xl font-extrabold text-[#2C1B10] tracking-tight">{t('stock.title')}</h1>
+          {isOwner && (
+            <p className="text-xs text-[#8C7361] mt-0.5">
+              {effectiveLocation === 'HOME'
+                ? (t('stock.homeStockBannerDesc') || 'ይህ ክምችት ለእርስዎ (ባለቤቱ) ብቻ የሚታይ ነው። ሠራተኞች ወይም አድሚኖች ፈጽሞ አያዩትም።')
+                : (t('stock.subtitle') || 'የመጋዘን ጥሬ ዕቃዎችና ክምችት ቁጥጥር')}
+            </p>
+          )}
+        </div>
+        {user?.role === "OWNER" && (
+          <div className="flex items-center gap-2 sm:gap-3 w-full sm:w-auto">
+            {effectiveLocation === 'MAIN' && (
+              <Link href="/stock/role-materials" className="flex-1 sm:flex-initial">
+                <Button variant="outline" size="default" className="w-full flex items-center justify-center gap-1.5 border-[#EDE4D5] hover:bg-[#FAF6F0] font-bold text-xs sm:text-sm h-10 rounded-xl">
+                  <SlidersHorizontal className="w-4 h-4 text-[#8C7361]" />
+                  <span>{t('stock.roleStockAccess')}</span>
+                </Button>
+              </Link>
+            )}
+            <Button onClick={() => setIsAddOpen(true)} size="default" className="flex-1 sm:flex-initial h-10 rounded-xl">
+              <Plus className="w-4 h-4 shrink-0" />
+              <span>{t('stock.newItem')}</span>
+            </Button>
+          </div>
+        )}
+      </div>
+
+      {/* Owner Location Switcher (Bakery Workspace Stock vs Private Home Stock) */}
+      {isOwner && (
+        <div className="mb-6 flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-2 bg-[#FAF6F0] border border-[#EDE4D5] rounded-2xl">
+          <div className="flex items-center gap-1.5 p-1 bg-white border border-[#EDE4D5] rounded-xl w-full sm:w-fit shadow-2xs">
+            <button
+              type="button"
+              onClick={() => setActiveLocation('MAIN')}
+              className={`flex-1 sm:flex-initial flex items-center justify-center gap-2 px-4 py-2 rounded-lg font-extrabold text-xs sm:text-sm transition-all cursor-pointer ${
+                effectiveLocation === 'MAIN'
+                  ? 'bg-amber-700 text-white shadow-xs'
+                  : 'text-[#8C7361] hover:text-[#2C1B10]'
+              }`}
+            >
+              <Store className="w-4 h-4" />
+              <span>{t('stock.locationBakery') || 'የዳቦ ቤት ክምችት'}</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setActiveLocation('HOME')}
+              className={`flex-1 sm:flex-initial flex items-center justify-center gap-2 px-4 py-2 rounded-lg font-extrabold text-xs sm:text-sm transition-all cursor-pointer ${
+                effectiveLocation === 'HOME'
+                  ? 'bg-amber-600 text-white shadow-xs'
+                  : 'text-[#8C7361] hover:text-[#2C1B10]'
+              }`}
+            >
+              <Home className="w-4 h-4" />
+              <span>{t('stock.locationHome') || 'የቤት / የግል ክምችት'}</span>
+              <span className={`text-[10px] px-1.5 py-0.5 rounded-md font-mono ${effectiveLocation === 'HOME' ? 'bg-black/20 text-white' : 'bg-amber-100 text-amber-900'}`}>
+                🔒
+              </span>
+            </button>
+          </div>
+
+          {effectiveLocation === 'HOME' ? (
+            <div className="flex items-center gap-2 text-xs font-bold text-amber-800 bg-amber-100/70 border border-amber-200/80 px-3 py-1.5 rounded-xl">
+              <Lock className="w-3.5 h-3.5 shrink-0" />
+              <span>{t('stock.homeStockBannerTitle') || 'የግል የቤት ክምችት (ለእርስዎ ብቻ)'}</span>
+            </div>
+          ) : (
+            <div className="text-xs text-[#8C7361] px-2">
+              <span>{t('stock.stockInShop') || 'በመጋዘን ውስጥ ያለ'}</span>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Pending Inward Deliveries Callout for Stock Keeper */}
+      {isStockKeeper && pendingApprovals.length > 0 && (
+        <div className="mb-6 p-4 bg-amber-50 border-2 border-amber-300 rounded-2xl flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shadow-xs">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-xl bg-amber-200 text-amber-900 flex items-center justify-center shrink-0">
+              <PackageCheck className="w-5 h-5" />
+            </div>
+            <div>
+              <h4 className="font-extrabold text-sm text-[#2C1B10]">
+                {pendingApprovals.length === 1
+                  ? t('stock.inwardDeliveryAwaitingVerificationSingular')
+                  : t('stock.inwardDeliveriesAwaitingVerification', { count: pendingApprovals.length })}
+              </h4>
+              <p className="text-xs text-[#8C7361]">
+                {t('stock.inwardDeliveriesAwaitingVerificationDesc')}
+              </p>
+            </div>
+          </div>
+          <Link href="/stock-movements?tab=approvals" className="w-full sm:w-auto">
+            <Button className="w-full sm:w-auto h-9 px-4 bg-amber-600 hover:bg-amber-700 text-white font-bold rounded-xl text-xs flex items-center justify-center gap-1.5 shrink-0 shadow-xs">
+              <CheckCircle2 className="w-4 h-4" />
+              <span>{t('stock.btnVerifyAcceptDeliveries')}</span>
+            </Button>
+          </Link>
+        </div>
+      )}
+
+      {/* Rejected Inward Deliveries Callout for Admin/Owner */}
+      {isGlobalAdmin && rejectedDeliveries.length > 0 && (
+        <div className="mb-6 p-4 bg-rose-50 border-2 border-rose-300 rounded-2xl flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shadow-xs">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-xl bg-rose-200 text-rose-900 flex items-center justify-center shrink-0">
+              <AlertCircle className="w-5 h-5" />
+            </div>
+            <div>
+              <h4 className="font-extrabold text-sm text-[#2C1B10]">
+                {rejectedDeliveries.length === 1
+                  ? t('stock.inwardDeliveryRejectedTitleSingular')
+                  : t('stock.inwardDeliveriesRejectedTitle', { count: rejectedDeliveries.length })}
+              </h4>
+              <p className="text-xs text-[#8C7361]">
+                {t('stock.inwardDeliveriesRejectedDesc')}
+              </p>
+            </div>
+          </div>
+          <Link href="/stock-movements?tab=rejected" className="w-full sm:w-auto">
+            <Button className="w-full sm:w-auto h-9 px-4 bg-rose-600 hover:bg-rose-700 text-white font-bold rounded-xl text-xs flex items-center justify-center gap-1.5 shrink-0 shadow-xs">
+              <Edit3 className="w-4 h-4" />
+              <span>{t('stock.btnReviewResubmit')}</span>
+            </Button>
+          </Link>
+        </div>
+      )}
+
+      {/* Filter Bar with Centered Segmented Control */}
+      <div className="bg-white border border-[#EDE4D5] rounded-2xl p-3 sm:p-4 mb-6 shadow-xs flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
+        <div className="w-full sm:max-w-md mx-auto sm:mx-0">
+          <div className="grid grid-cols-2 gap-1.5 p-1.5 bg-[#EDE4D5]/70 rounded-2xl w-full shadow-2xs">
+            <button
+              type="button"
+              onClick={() => {
+                setFilterLowStock(false);
+                setFilterToday(false);
+              }}
+              className={`py-2 px-3 rounded-xl text-xs font-extrabold transition-all flex items-center justify-center gap-2 ${
+                !filterLowStock
+                  ? "bg-[#4A2E1B] text-white shadow-md ring-2 ring-[#4A2E1B]/20"
+                  : "text-[#8C7361] hover:text-[#2C1B10] hover:bg-white/50"
+              }`}
+            >
+              <span>{t('stock.filterAllItems')}</span>
+              <span className={`text-[10px] px-2 py-0.5 rounded-full font-mono font-bold ${
+                !filterLowStock ? "bg-white/20 text-white" : "bg-[#4A2E1B]/10 text-[#4A2E1B]"
+              }`}>
+                {items.length}
+              </span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setFilterLowStock(true)}
+              className={`py-2 px-3 rounded-xl text-xs font-extrabold transition-all flex items-center justify-center gap-2 ${
+                filterLowStock
+                  ? "bg-rose-600 text-white shadow-md ring-2 ring-rose-500/20"
+                  : "text-[#8C7361] hover:text-rose-700 hover:bg-rose-50/50"
+              }`}
+            >
+              <span>⚠️ {t('stock.lowStockWarningBadge')}</span>
+              {lowStockCount > 0 ? (
+                <span className={`text-[10px] px-2 py-0.5 rounded-full font-mono font-bold ${
+                  filterLowStock ? "bg-white text-rose-700 font-extrabold" : "bg-rose-600 text-white"
+                }`}>
+                  {lowStockCount}
+                </span>
+              ) : (
+                <span className={`text-[10px] px-2 py-0.5 rounded-full font-mono font-bold ${
+                  filterLowStock ? "bg-white/20 text-white" : "bg-zinc-200 text-zinc-600"
+                }`}>
+                  0
+                </span>
+              )}
+            </button>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-2 w-full sm:w-auto">
+          <Input
+            placeholder={t('common.search')}
+            value={searchTerm}
+            onChange={(e) => setSearchTerm(e.target.value)}
+            className="w-full sm:w-64 rounded-xl border-[#EDE4D5] text-xs h-10 bg-[#FAF6F0]/40"
+          />
+        </div>
+      </div>
+
+
+      {/* Stock Category Filter Pills */}
+      <div className="mb-6 flex items-center gap-2 overflow-x-auto pb-2 scrollbar-none">
+        <button
+          type="button"
+          onClick={() => setSelectedCategory('ALL')}
+          className={`px-3.5 py-2 rounded-xl text-xs font-bold transition-all shrink-0 flex items-center gap-1.5 ${
+            selectedCategory === 'ALL'
+              ? 'bg-[#E87A18] text-white shadow-xs'
+              : 'bg-white border border-[#EDE4D5] text-[#4A2E1B] hover:bg-[#FAF6F0]'
+          }`}
+        >
+          <span>{t('stock.allStock')}</span>
+          <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-mono ${
+            selectedCategory === 'ALL' ? 'bg-white/20 text-white' : 'bg-[#EDE4D5] text-[#4A2E1B]'
+          }`}>
+            {items.length}
+          </span>
+        </button>
+
+        {STOCK_CATEGORIES.map((cat) => {
+          const count = items.filter(
+            (i) => i.category === cat.name || i.categoryLatin === cat.name || i.category === cat.nameLatin || i.categoryLatin === cat.nameLatin
+          ).length;
+          const isSelected = selectedCategory === cat.name;
+          return (
+            <button
+              key={cat.name}
+              type="button"
+              onClick={() => setSelectedCategory(cat.name)}
+              className={`px-3.5 py-2 rounded-xl text-xs font-bold transition-all shrink-0 flex items-center gap-1.5 ${
+                isSelected
+                  ? 'bg-[#E87A18] text-white shadow-xs'
+                  : 'bg-white border border-[#EDE4D5] text-[#4A2E1B] hover:bg-[#FAF6F0]'
+              }`}
+            >
+              <span>{getItemName(cat)}</span>
+              <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-mono ${
+                isSelected ? 'bg-white/20 text-white' : 'bg-[#EDE4D5] text-[#4A2E1B]'
+              }`}>
+                {count}
+              </span>
+            </button>
+          );
+        })}
+      </div>
+
+      {/* Desktop Table View - Proportionally fitted with no horizontal scroll */}
+      <div className="hidden sm:block bg-white border border-[#EDE4D5] rounded-2xl shadow-xs overflow-hidden">
+        <Table className="w-full">
+          <TableHeader className="bg-[#FAF6F0]/70">
+            <TableRow className="border-[#EDE4D5]">
+              <TableHead className="py-3 px-3.5 text-xs font-bold text-[#4A2E1B]">{t('stock.colItemName')}</TableHead>
+              <TableHead className="py-3 px-2.5 text-xs font-bold text-[#4A2E1B]">{t('products.colUnit')}</TableHead>
+              {isOwner && <TableHead className="py-3 px-2.5 text-xs font-bold text-[#4A2E1B]">{t('stock.colUnitPrice')}</TableHead>}
+              <TableHead className="py-3 px-2.5 text-xs font-bold text-[#4A2E1B]">{t('stock.colCurrentQty')}</TableHead>
+              {isOwner && <TableHead className="py-3 px-2.5 text-xs font-bold text-[#4A2E1B]">{t('dashboard.productStockValue')}</TableHead>}
+              <TableHead className="py-3 px-2.5 text-xs font-bold text-[#4A2E1B]">{t('stock.colMinLevel')}</TableHead>
+              <TableHead className="py-3 px-3 text-right text-xs font-bold text-[#4A2E1B] pr-4">{t('common.actions')}</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {isLoading ? (
+              <TableRow>
+                <TableCell colSpan={isOwner ? 7 : 5} className="p-4">
+                  <TableSkeleton rows={6} columns={isOwner ? 6 : 4} hasActions={true} />
+                </TableCell>
+              </TableRow>
+            ) : filteredItems.length === 0 ? (
+              <TableRow><TableCell colSpan={isOwner ? 7 : 5} className="text-center py-8 text-[#8C7361] font-medium">{t('stock.noItems')}</TableCell></TableRow>
+            ) : filteredItems.map(item => {
+              const isLowStock = item.minStockLevel != null && Number(item.currentQuantity) <= Number(item.minStockLevel);
+              const price = Number(item.unitPrice || 0);
+              const totalVal = Number(item.currentQuantity) * price;
+              return (
+                <TableRow key={item.id} className="border-[#EDE4D5] hover:bg-[#FAF6F0]/40 transition-colors">
+                  <TableCell className="py-3 px-3.5 font-bold text-[#2C1B10]">
+                    <div className="flex items-center gap-2">
+                      <div className="min-w-0">
+                        <Link 
+                          href={`/stock/${item.id}`} 
+                          className="hover:text-[#E87A18] hover:underline font-extrabold text-sm transition-colors block truncate"
+                        >
+                          {getItemName(item)}
+                        </Link>
+                        {item.category && (
+                          <span className="text-[10px] font-semibold text-[#A48F7F] block mt-0.5 truncate">
+                            {getItemName({ name: item.category, nameLatin: item.categoryLatin })}
+                          </span>
+                        )}
+                      </div>
+                      {isLowStock && (
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-extrabold bg-rose-100 text-rose-800 border border-rose-200 shrink-0">
+                          <AlertCircle className="w-3 h-3" /> {t('stock.lowStockWarningBadge')}
+                        </span>
+                      )}
+                    </div>
+                  </TableCell>
+                  <TableCell className="py-3 px-2.5">
+                    <span className="px-2 py-0.5 rounded-md bg-[#FAF6F0] text-[#4A2E1B] border border-[#EDE4D5] text-xs font-bold">
+                      {item.unitType}
+                    </span>
+                  </TableCell>
+                  {isOwner && (
+                    <TableCell className="py-3 px-2.5 font-bold text-xs text-[#2C1B10] font-mono">
+                      {price > 0 ? (
+                        <div>
+                          <span>{price.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 4 })} ETB</span>
+                          {item.unitType === 'GRAM' && (
+                            <span className="block text-[10px] text-[#8C7361] font-sans font-normal">
+                              ({(price * 1000).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}/kg)
+                            </span>
+                          )}
+                        </div>
+                      ) : "0.00 ETB"}
+                    </TableCell>
+                  )}
+                  <TableCell className="py-3 px-2.5">
+                    <div>
+                      <span className={`font-extrabold text-sm font-mono ${isLowStock ? 'text-rose-700' : 'text-emerald-700'}`}>
+                        {item.unitType === 'GRAM' ? Number(item.currentQuantity).toLocaleString() : Number(item.currentQuantity).toFixed(2)}
+                      </span>
+                      {item.unitType === 'GRAM' && Number(item.currentQuantity) >= 1000 && (
+                        <span className="block text-[10px] text-[#8C7361] font-sans font-medium">
+                          ({(Number(item.currentQuantity) / 1000).toFixed(2)} kg)
+                        </span>
+                      )}
+                    </div>
+                  </TableCell>
+                  {isOwner && (
+                    <TableCell className="py-3 px-2.5 font-extrabold text-xs text-amber-900 font-mono">
+                      {totalVal > 0 ? `${totalVal.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ETB` : "0.00 ETB"}
+                    </TableCell>
+                  )}
+                  <TableCell className="py-3 px-2.5 font-semibold text-[#8C7361] text-xs font-mono">
+                    {item.minStockLevel != null ? Number(item.minStockLevel).toFixed(2) : "—"}
+                  </TableCell>
+                  <TableCell className="py-3 px-3 text-right pr-4">
+                    <div className="flex items-center justify-end gap-1 flex-nowrap">
+                      <Link href={`/stock/${item.id}`}>
+                        <Button 
+                          variant="outline" 
+                          size="sm" 
+                          className="h-8 px-2 text-xs text-[#4A2E1B] border-[#EDE4D5] hover:bg-[#FAF6F0] hover:text-[#E87A18] flex items-center gap-1 font-bold rounded-lg"
+                          title={t('stock.viewHistory')}
+                        >
+                          <History className="w-3.5 h-3.5 shrink-0" />
+                          <span className="hidden xl:inline">{t('stock.viewHistory')}</span>
+                        </Button>
+                      </Link>
+
+                      {isStockStaff && (
+                        <Button 
+                          variant="outline" 
+                          size="sm" 
+                          onClick={() => openAddStockModal(item)}
+                          className="h-8 px-2 text-xs text-emerald-700 bg-emerald-50/70 border-emerald-300 hover:bg-emerald-100 flex items-center gap-1 font-bold rounded-lg"
+                          title={t('stock.addStock')}
+                        >
+                          <PlusCircle className="w-3.5 h-3.5 shrink-0" />
+                          <span>{t('common.add') || 'Add'}</span>
+                        </Button>
+                      )}
+
+                      {isStockStaff && (
+                        <Button 
+                          variant="outline" 
+                          size="sm" 
+                          onClick={() => {
+                            setReducingItem(item);
+                            setReduceAmount("");
+                            setReduceReceivedBy("");
+                            setReduceReason("");
+                          }}
+                          className="h-8 px-2 text-xs text-amber-700 bg-amber-50/70 border-amber-300 hover:bg-amber-100 flex items-center gap-1 font-bold rounded-lg"
+                          title={t('stock.reduceStock')}
+                        >
+                          <MinusCircle className="w-3.5 h-3.5 shrink-0" />
+                          <span>{t('stock.reduceStock') || 'Reduce'}</span>
+                        </Button>
+                      )}
+
+                      {isStockStaff && (
+                        <Button 
+                          variant="outline" 
+                          size="sm" 
+                          onClick={() => openAdjustStockModal(item)}
+                          className="h-8 px-2 text-xs text-orange-700 bg-orange-50/70 border-orange-300 hover:bg-orange-100 flex items-center gap-1 font-bold rounded-lg"
+                          title={t('stock.auditAdjustTitle') || 'Audit / Adjust Physical Stock Count'}
+                        >
+                          <SlidersHorizontal className="w-3.5 h-3.5 shrink-0" />
+                          <span className="hidden xl:inline">{t('stock.adjustStock') || 'Adjust'}</span>
+                        </Button>
+                      )}
+
+                      {isOwner && (
+                        <>
+                          <Button 
+                            variant="ghost" 
+                            size="sm" 
+                            onClick={() => setEditingItem(item)}
+                            className="h-8 w-8 p-0 text-zinc-600 hover:text-zinc-900 rounded-lg"
+                            title={t('common.edit') || "Edit"}
+                          >
+                            <Edit3 className="w-3.5 h-3.5" />
+                          </Button>
+                          <Button 
+                            variant="ghost" 
+                            size="sm" 
+                            onClick={() => setItemToDelete(item)}
+                            className="h-8 w-8 p-0 text-red-500 hover:text-red-700 hover:bg-red-50 rounded-lg"
+                            title={t('common.delete') || "Delete"}
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </Button>
+                        </>
+                      )}
+                    </div>
+                  </TableCell>
+                </TableRow>
+              );
+            })}
+          </TableBody>
+        </Table>
+      </div>
+
+      {/* Mobile Cards View */}
+      <div className="grid grid-cols-1 gap-3 sm:hidden">
+        {isLoading ? (
+          <TableSkeleton rows={4} columns={3} hasActions={false} />
+        ) : filteredItems.length === 0 ? (
+          <div className="bg-white p-6 rounded-2xl text-center text-[#8C7361] font-medium border border-[#EDE4D5]">{t('stock.noItems')}</div>
+        ) : filteredItems.map(item => {
+          const isLowStock = item.minStockLevel != null && Number(item.currentQuantity) <= Number(item.minStockLevel);
+          const price = Number(item.unitPrice || 0);
+          const totalVal = Number(item.currentQuantity) * price;
+          return (
+            <div key={item.id} className="bg-white rounded-2xl p-4 border border-[#EDE4D5] shadow-xs space-y-3">
+              <div className="flex items-start justify-between">
+                <div>
+                  <Link href={`/stock/${item.id}`} className="font-extrabold text-[#2C1B10] hover:text-[#E87A18] text-base block">
+                    {getItemName(item)}
+                  </Link>
+                  {item.category && (
+                    <span className="text-[10px] font-semibold text-[#A48F7F] block">
+                      {getItemName({ name: item.category, nameLatin: item.categoryLatin })}
+                    </span>
+                  )}
+                  <div className="flex items-center gap-2 mt-1">
+                    <span className="px-2 py-0.5 rounded-md bg-[#FAF6F0] text-[#4A2E1B] border border-[#EDE4D5] text-[11px] font-bold">
+                      {item.unitType}
+                    </span>
+                    {isLowStock && (
+                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-extrabold bg-rose-100 text-rose-800 border border-rose-200">
+                        <AlertCircle className="w-3 h-3" /> {t('stock.lowStockWarningBadge')}
+                      </span>
+                    )}
+                  </div>
+                </div>
+                <div className="text-right">
+                  <div className={`text-lg font-extrabold font-mono ${isLowStock ? 'text-rose-700' : 'text-emerald-700'}`}>
+                    {item.unitType === 'GRAM' ? Number(item.currentQuantity).toLocaleString() : Number(item.currentQuantity).toFixed(2)}
+                  </div>
+                  {item.unitType === 'GRAM' && Number(item.currentQuantity) >= 1000 && (
+                    <div className="text-[10px] text-[#8C7361] font-sans font-medium">
+                      ({(Number(item.currentQuantity) / 1000).toFixed(2)} kg)
+                    </div>
+                  )}
+                  <div className="text-[10px] text-[#8C7361] font-bold uppercase">{t('stock.colCurrentQty')}</div>
+                </div>
+              </div>
+
+              {isOwner && (
+                <div className="grid grid-cols-2 gap-2 pt-2 border-t border-zinc-100 text-xs">
+                  <div>
+                    <span className="text-[#8C7361] block text-[10px] uppercase font-semibold">{t('stock.colUnitPrice')}</span>
+                    <span className="font-bold text-[#2C1B10] font-mono">{price > 0 ? `${price.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${t('common.currency')}` : `0.00 ${t('common.currency')}`}</span>
+                  </div>
+                  <div>
+                    <span className="text-[#8C7361] block text-[10px] uppercase font-semibold">{t('stock.colStockValue')}</span>
+                    <span className="font-bold text-amber-900 font-mono">{totalVal > 0 ? `${totalVal.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${t('common.currency')}` : `0.00 ${t('common.currency')}`}</span>
+                  </div>
+                </div>
+              )}
+
+              {/* Primary Actions Row */}
+              <div className={`grid ${isStockStaff ? 'grid-cols-4' : 'grid-cols-2'} gap-1.5 pt-2 border-t border-zinc-100`}>
+                <Link href={`/stock/${item.id}`} className="w-full">
+                  <Button variant="outline" size="sm" className="w-full h-9 text-xs text-[#4A2E1B] border-[#EDE4D5] hover:bg-[#FAF6F0] font-bold flex items-center justify-center gap-1 px-1">
+                    <History className="w-3.5 h-3.5 shrink-0" />
+                    <span className="truncate">{t('stock.viewHistory')}</span>
+                  </Button>
+                </Link>
+
+                {isStockStaff && (
+                  <Button 
+                    variant="outline" 
+                    size="sm" 
+                    onClick={() => openAddStockModal(item)}
+                    className="h-9 px-1 text-xs text-emerald-700 border-emerald-300 hover:bg-emerald-50 font-bold flex items-center justify-center gap-1"
+                  >
+                    <PlusCircle className="w-3.5 h-3.5 shrink-0" />
+                    <span>{t('stock.addStock')}</span>
+                  </Button>
+                )}
+
+                {isStockStaff && (
+                  <Button 
+                    variant="outline" 
+                    size="sm" 
+                    onClick={() => openAdjustStockModal(item)}
+                    className="h-9 px-1 text-xs text-orange-700 border-orange-300 hover:bg-orange-50 font-bold flex items-center justify-center gap-1"
+                    title={t('stock.auditAdjustTitle') || 'Audit / Adjust Stock'}
+                  >
+                    <SlidersHorizontal className="w-3.5 h-3.5 shrink-0" />
+                    <span>{t('stock.adjustStock') || 'Adjust'}</span>
+                  </Button>
+                )}
+
+                {isStockStaff && (
+                  <Button 
+                    variant="outline" 
+                    size="sm" 
+                    onClick={() => {
+                      setReducingItem(item);
+                      setReduceAmount("");
+                      setReduceReceivedBy("");
+                      setReduceReason("");
+                    }}
+                    className="h-9 px-1 text-xs text-amber-700 border-amber-300 hover:bg-amber-50 font-bold flex items-center justify-center gap-1"
+                  >
+                    <MinusCircle className="w-3.5 h-3.5 shrink-0" />
+                    <span>{t('stock.reduceStock')}</span>
+                  </Button>
+                )}
+              </div>
+
+              {/* Owner Manage Row (Edit / Delete) */}
+              {isOwner && (
+                <div className="flex items-center gap-2 pt-1 border-t border-dashed border-zinc-150">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setEditingItem(item)}
+                    className="flex-1 h-8 text-xs font-bold text-[#4A2E1B] border-[#EDE4D5] hover:bg-[#FAF6F0] flex items-center justify-center gap-1"
+                  >
+                    <Edit3 className="w-3 h-3 text-[#8C7361]" /> {t('common.edit')}
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setItemToDelete(item)}
+                    className="flex-1 h-8 text-xs font-bold text-rose-600 border-rose-200 hover:bg-rose-50 flex items-center justify-center gap-1"
+                  >
+                    <Trash2 className="w-3 h-3 text-rose-500" /> {t('common.delete')}
+                  </Button>
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Add / Edit Item Definition Dialog */}
+      {(isAddOpen || editingItem) && (
+        <Dialog open={true} onOpenChange={(open) => {
+          if (!open) {
+            setIsAddOpen(false);
+            setEditingItem(null);
+            setIsCreateLoan(false);
+            setCreatePaidAmount("");
+            setCreateSupplierName("");
+            setIsCreateAutoConfirm(false);
+          }
+        }}>
+          <DialogContent className="max-w-md rounded-2xl max-h-[90vh] overflow-y-auto">
+            <DialogHeader>
+              <DialogTitle className="text-lg font-extrabold text-[#2C1B10]">
+                {editingItem ? t('stock.modalEditTitle') : t('stock.modalCreateTitle')}
+              </DialogTitle>
+            </DialogHeader>
+            <form onSubmit={(e) => handleSubmit(e, !!editingItem)}>
+              <div className="grid gap-3.5 py-3">
+                {effectiveLocation === 'HOME' && !editingItem && bakeryCatalogItems.length > 0 && (
+                  <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl space-y-1">
+                    <label className="text-[11px] font-bold text-amber-950 block">
+                      {t('stock.selectExistingItemToCopy') || 'ከዚህ በፊት የተመዘገበ ዕቃ መረጃ ቅዳ'}
+                    </label>
+                    <select
+                      className="w-full text-xs h-9 bg-white border border-amber-300 rounded-lg px-2 text-[#2C1B10]"
+                      onChange={(e) => {
+                        const selected = bakeryCatalogItems.find(i => i.id === e.target.value);
+                        if (selected) {
+                          const form = e.target.closest('form');
+                          if (form) {
+                            const nameInput = form.elements.namedItem('name') as HTMLInputElement;
+                            const nameLatinInput = form.elements.namedItem('nameLatin') as HTMLInputElement;
+                            const catSelect = form.elements.namedItem('category') as HTMLSelectElement;
+                            const unitSelect = form.elements.namedItem('unitType') as HTMLSelectElement;
+                            const priceInput = form.elements.namedItem('unitPrice') as HTMLInputElement;
+                            if (nameInput) nameInput.value = selected.name;
+                            if (nameLatinInput && selected.nameLatin) nameLatinInput.value = selected.nameLatin;
+                            if (catSelect && selected.category) catSelect.value = selected.category;
+                            if (unitSelect) unitSelect.value = selected.unitType;
+                            if (priceInput && selected.unitPrice) priceInput.value = String(selected.unitPrice);
+                          }
+                        }
+                      }}
+                    >
+                      <option value="">{t('stock.copyFromBakeryCatalog') || 'ከዳቦ ቤት ካታሎግ ምረጥ...'}</option>
+                      {bakeryCatalogItems.map(bItem => (
+                        <option key={bItem.id} value={bItem.id}>
+                          {bItem.name} ({bItem.unitType}) {bItem.unitPrice ? `- ${bItem.unitPrice} ETB` : ''}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+
+                {effectiveLocation === 'MAIN' && isOwner && !editingItem && homeCatalogItems.length > 0 && (
+                  <div className="p-3 bg-amber-50/70 border border-amber-200 rounded-xl space-y-1">
+                    <label className="text-[11px] font-bold text-amber-950 block">
+                      {t('stock.selectHomeItemToCopy') || 'ከቤት ክምችት ዕቃ መረጃ ቅዳ'}
+                    </label>
+                    <select
+                      className="w-full text-xs h-9 bg-white border border-amber-300 rounded-lg px-2 text-[#2C1B10]"
+                      onChange={(e) => {
+                        const selected = homeCatalogItems.find(i => i.id === e.target.value);
+                        if (selected) {
+                          const form = e.target.closest('form');
+                          if (form) {
+                            const nameInput = form.elements.namedItem('name') as HTMLInputElement;
+                            const nameLatinInput = form.elements.namedItem('nameLatin') as HTMLInputElement;
+                            const catSelect = form.elements.namedItem('category') as HTMLSelectElement;
+                            const unitSelect = form.elements.namedItem('unitType') as HTMLSelectElement;
+                            const priceInput = form.elements.namedItem('unitPrice') as HTMLInputElement;
+                            if (nameInput) nameInput.value = selected.name;
+                            if (nameLatinInput && selected.nameLatin) nameLatinInput.value = selected.nameLatin;
+                            if (catSelect && selected.category) catSelect.value = selected.category;
+                            if (unitSelect) unitSelect.value = selected.unitType;
+                            if (priceInput && selected.unitPrice) priceInput.value = String(selected.unitPrice);
+                          }
+                        }
+                      }}
+                    >
+                      <option value="">{t('stock.copyFromHomeCatalog') || 'ከቤት ክምችት ምረጥ...'}</option>
+                      {homeCatalogItems.map(hItem => (
+                        <option key={hItem.id} value={hItem.id}>
+                          {hItem.name} ({hItem.unitType}) {hItem.unitPrice ? `- ${hItem.unitPrice} ETB` : ''}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+
+                {isGlobalAdmin && !editingItem && (
+                  <div>
+                    <label className="text-xs font-bold text-[#2C1B10] mb-1 block uppercase">{t('common.branch')}</label>
+                    <select name="branchId" required defaultValue={selectedBranchId || ""} className="w-full border border-zinc-200 rounded-xl h-10 px-3 bg-white text-sm focus:ring-2 focus:ring-[#E87A18]">
+                      <option value="" disabled>{t('common.selectBranch')}</option>
+                      {branches.map(b => (
+                        <option key={b.id} value={b.id}>{b.name}</option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+
+                <div>
+                  <label className="text-xs font-bold text-[#2C1B10] mb-1 block uppercase">
+                    {t('stock.categoryLabel')}
+                  </label>
+                  <select 
+                    name="category" 
+                    required 
+                    defaultValue={editingItem?.category || ""} 
+                    className="w-full border border-zinc-200 rounded-xl h-10 px-3 bg-white text-sm focus:ring-2 focus:ring-[#E87A18]"
+                  >
+                    <option value="" disabled>
+                      {t('stock.selectCategoryPlaceholder')}
+                    </option>
+                    {STOCK_CATEGORIES.map(cat => (
+                      <option key={cat.name} value={cat.name}>
+                        {getItemName(cat)} ({cat.nameLatin})
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
+                  <label className="text-xs font-bold text-[#2C1B10] mb-1 block uppercase">
+                    {t('stock.nameGeezLabel')}
+                  </label>
+                  <Input 
+                    name="name" 
+                    required 
+                    defaultValue={editingItem?.name || ""} 
+                    placeholder={t("stock.nameAmharicPlaceholder")} 
+                    className="h-10 rounded-xl border-zinc-200" 
+                  />
+                </div>
+
+                <div>
+                  <label className="text-xs font-bold text-[#2C1B10] mb-1 block uppercase">
+                    {t('stock.nameLatinLabel')}
+                  </label>
+                  <Input 
+                    name="nameLatin" 
+                    defaultValue={editingItem?.nameLatin || ""} 
+                    placeholder={t("stock.nameLatinPlaceholder")} 
+                    className="h-10 rounded-xl border-zinc-200" 
+                  />
+                </div>
+                
+                <div>
+                  <label className="text-xs font-bold text-[#2C1B10] mb-1 block uppercase">{t('common.unit')}</label>
+                  <select name="unitType" required defaultValue={editingItem?.unitType || "KG"} className="w-full border border-zinc-200 rounded-xl h-10 px-3 bg-white text-sm focus:ring-2 focus:ring-[#E87A18]">
+                    <option value="KG">{t('stock.unitKgDesc') || 'Kg (Kilogram)'}</option>
+                    <option value="GRAM">Gram (ግራም / g)</option>
+                    <option value="PIECE">{t('stock.unitPieceDesc') || 'Piece'}</option>
+                    <option value="LITER">{t('stock.unitLiterDesc') || 'Liter'}</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="text-xs font-bold text-[#2C1B10] mb-1 block uppercase">{t('stock.unitPriceLabel')}</label>
+                  <Input
+                    name="unitPrice"
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    defaultValue={editingItem?.unitPrice ?? ""}
+                    placeholder="0.00"
+                    onFocus={(e) => e.target.select()}
+                    className="h-10 rounded-xl border-zinc-200 font-mono"
+                  />
+                </div>
+
+                <div>
+                  <label className="text-xs font-bold text-[#2C1B10] mb-1 block uppercase">{t('stock.currentAvailableQty')}</label>
+                  <Input
+                    name="currentQuantity"
+                    type="number"
+                    step="0.001"
+                    required
+                    defaultValue={editingItem?.currentQuantity ?? ""}
+                    placeholder="0.00"
+                    onFocus={(e) => e.target.select()}
+                    className="h-10 rounded-xl border-zinc-200 font-mono"
+                  />
+                </div>
+
+                <div>
+                  <label className="text-xs font-bold text-[#2C1B10] mb-1 block uppercase">{t('stock.minThresholdAlert')}</label>
+                  <Input
+                    name="minStockLevel"
+                    type="number"
+                    step="0.001"
+                    defaultValue={editingItem?.minStockLevel ?? ""}
+                    placeholder="e.g. 10.00"
+                    onFocus={(e) => e.target.select()}
+                    className="h-10 rounded-xl border-zinc-200 font-mono"
+                  />
+                </div>
+
+                {!editingItem && (
+                  <div>
+                    <label className="text-xs font-bold text-[#2C1B10] mb-1 block uppercase">{t('common.date') || 'Date'}</label>
+                    <AppDatePicker
+                      value={createDate}
+                      onChange={(val) => setCreateDate(val)}
+                      className="h-10 rounded-xl border-zinc-200"
+                    />
+                  </div>
+                )}
+
+                {!editingItem && (
+                  <div className="p-3 bg-purple-50 rounded-xl border border-purple-100 space-y-3 mt-1">
+                    <label className="flex items-center gap-2 cursor-pointer">
+                      <input 
+                        type="checkbox" 
+                        checked={isCreateLoan} 
+                        onChange={(e) => setIsCreateLoan(e.target.checked)} 
+                        className="rounded border-purple-300 text-purple-600 focus:ring-purple-500 w-4 h-4"
+                      />
+                      <span className="text-xs font-bold text-purple-900">{t('stock.creditPurchase')}</span>
+                    </label>
+
+                    {isCreateLoan && (
+                      <div className="space-y-3 pt-1">
+                        <div>
+                          <label className="text-[11px] font-bold text-purple-900 mb-1 block uppercase">{t('stock.supplierOptional')}</label>
+                          <Input 
+                            value={createSupplierName} 
+                            onChange={(e) => setCreateSupplierName(e.target.value)} 
+                            placeholder={t("stock.supplierPlaceholder")} 
+                            className="bg-white rounded-xl border-purple-200 text-xs h-9" 
+                          />
+                        </div>
+                        <div>
+                          <label className="text-[11px] font-bold text-purple-900 mb-1 block uppercase">{t('stock.downPayment')}</label>
+                          <Input 
+                            type="number" 
+                            step="0.01" 
+                            min="0" 
+                            value={createPaidAmount} 
+                            onChange={(e) => setCreatePaidAmount(e.target.value)} 
+                            onFocus={(e) => e.target.select()}
+                            placeholder={t("stock.leaveZeroFullCredit")} 
+                            className="bg-white rounded-xl border-purple-200 text-xs h-9 font-mono" 
+                          />
+                          <p className="text-[10px] text-purple-700 mt-1 font-medium">
+                            {t('stock.creditNote')}
+                          </p>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+                {effectiveLocation === 'MAIN' && isOwner && !editingItem && (
+                  <div className="p-3 bg-zinc-50 rounded-xl border border-zinc-200 mt-1">
+                    <label className="flex items-center gap-2 cursor-pointer">
+                      <input 
+                        type="checkbox" 
+                        checked={isCreateAutoConfirm} 
+                        onChange={(e) => setIsCreateAutoConfirm(e.target.checked)} 
+                        className="rounded border-zinc-300 text-[#4A2E1B] focus:ring-[#4A2E1B] w-4 h-4"
+                      />
+                      <span className="text-xs font-bold text-zinc-800">{t('stock.autoConfirmPrompt')}</span>
+                    </label>
+                    <p className="text-[10px] text-zinc-500 mt-1 pl-6">
+                      {isCreateAutoConfirm ? t('stock.autoConfirmDesc') : t('stock.awaitingVerificationDesc')}
+                    </p>
+                  </div>
+                )}
+              </div>
+              <DialogFooter className="flex flex-col sm:flex-row gap-2 w-full pt-3">
+                <Button
+                  type="submit"
+                  size="lg"
+                  loading={isSubmitting}
+                  className="w-full sm:w-auto order-1 sm:order-2"
+                >
+                  {editingItem ? t('common.saveChanges') : t('stock.modalCreateTitle')}
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="lg"
+                  onClick={() => { setIsAddOpen(false); setEditingItem(null); setIsCreateAutoConfirm(false); }}
+                  className="w-full sm:w-auto order-2 sm:order-1"
+                >
+                  {t('common.cancel')}
+                </Button>
+              </DialogFooter>
+            </form>
+          </DialogContent>
+        </Dialog>
+      )}
+
+      {/* Manual Stock Addition Dialog */}
+      {addingItem && isStockStaff && (
+        <Dialog open={true} onOpenChange={(open) => { if (!open) setAddingItem(null); }}>
+          <DialogContent className="max-w-md rounded-2xl border-emerald-200 max-h-[90vh] overflow-y-auto">
+            <DialogHeader>
+              <DialogTitle className="text-lg font-extrabold text-[#2C1B10] flex items-center gap-2">
+                <PlusCircle className="w-5 h-5 text-emerald-600 shrink-0" />
+                {t('stock.modalAddStockTitle')}
+              </DialogTitle>
+            </DialogHeader>
+            <form onSubmit={handleAddStock}>
+              <div className="grid gap-3.5 py-3">
+                <div className="p-3 bg-emerald-50 rounded-xl border border-emerald-100 text-xs text-emerald-900 space-y-1">
+                  <div>
+                    Adding stock to <strong className="font-bold">{addingItem.name}</strong>. Currently available: <span className="font-bold text-emerald-700">{Number(addingItem.currentQuantity).toFixed(2)} {addingItem.unitType}</span>{isOwner && <> (Rate: <span className="font-bold text-emerald-800">{Number(addingItem.unitPrice || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} {t('common.currency')}/{addingItem.unitType}</span>)</>}.
+                  </div>
+                  <div className="text-[11px] font-bold text-emerald-800 pt-1 border-t border-emerald-200/60 flex items-center gap-1.5">
+                    <AlertCircle className="w-3.5 h-3.5 shrink-0 text-emerald-700" />
+                    <span>የጥሬ ዕቃ ገቢ ምዝገባ በቀጥታ ለድርጅቱ ባለቤት በማሳወቂያ ይላካል (Intake automatically notifies the Owner).</span>
+                  </div>
+                </div>
+
+                <div>
+                  <label className="text-xs font-bold text-[#2C1B10] mb-1 block uppercase">
+                    {t('common.date') || 'Date'} *
+                  </label>
+                  <AppDatePicker
+                    value={addDate}
+                    onChange={(val) => setAddDate(val)}
+                    className="h-10 rounded-xl border-zinc-200"
+                  />
+                  <p className="text-[10px] text-[#8C7361] mt-1 font-medium">
+                    Date of stock intake (select past date if intake occurred earlier).
+                  </p>
+                </div>
+
+                <div>
+                  <label className="text-xs font-bold text-[#2C1B10] mb-1 block uppercase">
+                    {t('stock.quantityToAdd')} ({addingItem.unitType}) *
+                  </label>
+                  <Input 
+                    type="number" 
+                    step="0.001" 
+                    required 
+                    min="0.001"
+                    value={addAmount} 
+                    onChange={(e) => setAddAmount(e.target.value)}
+                    onFocus={(e) => e.target.select()}
+                    placeholder="e.g. 50.00" 
+                    className="h-10 rounded-xl border-zinc-200 font-mono" 
+                  />
+                </div>
+
+                {isOwner && (
+                  <>
+                    <div>
+                      <div className="flex items-center justify-between mb-1">
+                        <label className="text-xs font-bold text-[#2C1B10] uppercase">
+                          {t('stock.unitPriceLabel') || "Current Unit Price"} ({t('common.currency')}/{addingItem.unitType})
+                        </label>
+                        {addingItem.unitPrice != null && (
+                          <span className="text-[11px] text-[#8C7361]">
+                            Current: {Number(addingItem.unitPrice).toFixed(2)} {t('common.currency')}
+                          </span>
+                        )}
+                      </div>
+                      <Input 
+                        type="number" 
+                        step="0.01" 
+                        min="0" 
+                        value={addUnitPrice} 
+                        onChange={(e) => setAddUnitPrice(e.target.value)}
+                        onFocus={(e) => e.target.select()}
+                        placeholder={addingItem.unitPrice ? String(addingItem.unitPrice) : "0.00"} 
+                        className="h-10 rounded-xl border-zinc-200 font-mono" 
+                      />
+                      <p className="text-[10px] text-[#8C7361] mt-1 font-medium">
+                        Prompting current pricing updates this item's latest purchasing rate and stock movement value.
+                      </p>
+                    </div>
+
+                    {(() => {
+                      const qty = parseFloat(addAmount) || 0;
+                      const rate = addUnitPrice !== "" ? (parseFloat(addUnitPrice) || 0) : Number(addingItem.unitPrice || 0);
+                      if (qty > 0 && rate > 0) {
+                        return (
+                          <div className="p-2.5 bg-emerald-50 rounded-xl border border-emerald-200 flex items-center justify-between text-xs">
+                            <span className="font-bold text-emerald-900">Total Purchase Cost:</span>
+                            <span className="font-mono font-extrabold text-emerald-800 text-sm">
+                              {(qty * rate).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} {t('common.currency')}
+                            </span>
+                          </div>
+                        );
+                      }
+                      return null;
+                    })()}
+                  </>
+                )}
+
+                <div>
+                  <label className="text-xs font-bold text-[#2C1B10] mb-1 block uppercase">
+                    {t('common.notes')}
+                  </label>
+                  <Input 
+                    value={addReason} 
+                    onChange={(e) => setAddReason(e.target.value)} 
+                    placeholder={t("stock.intakeReasonPlaceholder")} 
+                    className="h-10 rounded-xl border-zinc-200" 
+                  />
+                                {isGlobalAdmin && (
+                  <div className="p-3 bg-purple-50 rounded-xl border border-purple-100 space-y-3">
+                    <label className="flex items-center gap-2 cursor-pointer">
+                      <input 
+                        type="checkbox" 
+                        checked={isAddLoan} 
+                        onChange={(e) => setIsAddLoan(e.target.checked)} 
+                        className="rounded border-purple-300 text-purple-600 focus:ring-purple-500 w-4 h-4"
+                      />
+                      <span className="text-xs font-bold text-purple-900">{t('stock.creditPurchase')}</span>
+                    </label>
+
+                    {isAddLoan && (
+                      <div className="space-y-3 pt-1">
+                        <div>
+                          <label className="text-[11px] font-bold text-purple-900 mb-1 block uppercase">{t('stock.supplierOptional')}</label>
+                          <Input 
+                            value={addSupplierName} 
+                            onChange={(e) => setAddSupplierName(e.target.value)} 
+                            placeholder={t("stock.supplierPlaceholder")} 
+                            className="bg-white rounded-xl border-purple-200 text-xs h-9" 
+                          />
+                        </div>
+                        <div>
+                          <label className="text-[11px] font-bold text-purple-900 mb-1 block uppercase">{t('stock.paidAmountLabel')}</label>
+                          <Input 
+                            type="number" 
+                            step="0.01" 
+                            min="0" 
+                            value={addPaidAmount} 
+                            onChange={(e) => setAddPaidAmount(e.target.value)} 
+                            onFocus={(e) => e.target.select()} 
+                            placeholder={t("stock.leaveZeroFullCredit")} 
+                            className="bg-white rounded-xl border-purple-200 text-xs h-9 font-mono" 
+                          />
+                          <p className="text-[10px] text-purple-700 mt-1 font-medium">
+                            {t('stock.unpaidDebtNote')}
+                          </p>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}  </div>
+
+                {isOwner && effectiveLocation !== 'HOME' && addingItem.location !== 'HOME' && (
+                  <div className="p-3 bg-zinc-50 rounded-xl border border-zinc-200">
+                    <label className="flex items-center gap-2 cursor-pointer">
+                      <input 
+                        type="checkbox" 
+                        checked={isAutoConfirm} 
+                        onChange={(e) => setIsAutoConfirm(e.target.checked)} 
+                        className="rounded border-zinc-300 text-[#4A2E1B] focus:ring-[#4A2E1B] w-4 h-4"
+                      />
+                      <span className="text-xs font-bold text-zinc-800">{t('stock.autoConfirmPrompt')}</span>
+                    </label>
+                    <p className="text-[10px] text-zinc-500 mt-1 pl-6">
+                      {isAutoConfirm ? t('stock.autoConfirmDesc') : t('stock.awaitingVerificationDesc')}
+                    </p>
+                  </div>
+                )}
+              </div>
+              <DialogFooter className="flex flex-col sm:flex-row gap-2 w-full pt-2">
+                <Button
+                  type="submit"
+                  disabled={isSubmitting}
+                  loading={isSubmitting}
+                  className="w-full sm:w-auto h-11 sm:h-10 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-xl order-1 sm:order-2 shadow-sm"
+                >
+                  {isSubmitting ? t('common.loading') : t('stock.recordDeliveryBtn')}
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => setAddingItem(null)}
+                  className="w-full sm:w-auto h-10 rounded-xl border-[#EDE4D5] hover:bg-[#FAF6F0] order-2 sm:order-1"
+                >
+                  {t('common.cancel')}
+                </Button>
+              </DialogFooter>
+            </form>
+          </DialogContent>
+        </Dialog>
+      )}
+
+      {/* Manual Stock Reduction Dialog */}
+      {reducingItem && (
+        <Dialog open={true} onOpenChange={(open) => { if (!open) setReducingItem(null); }}>
+          <DialogContent className="bottom-0 top-auto translate-y-0 sm:top-1/2 sm:bottom-auto sm:-translate-y-1/2 max-w-full sm:max-w-md w-full rounded-t-3xl sm:rounded-2xl rounded-b-none sm:rounded-b-2xl p-4 sm:p-6 border border-amber-200/80 shadow-2xl max-h-[92dvh] sm:max-h-[90vh] flex flex-col gap-0 overflow-hidden bg-white">
+            {/* Mobile visual drag handle */}
+            <div className="w-12 h-1 bg-zinc-300 rounded-full mx-auto mb-2 sm:hidden shrink-0" />
+
+            <DialogHeader className="shrink-0 pb-3 border-b border-amber-100/70 pr-8">
+              <DialogTitle className="text-base sm:text-lg font-extrabold text-[#2C1B10] flex items-center gap-2">
+                <MinusCircle className="w-5 h-5 text-amber-600 shrink-0" />
+                <span>{t('stock.modalReduceStockTitle')}</span>
+              </DialogTitle>
+            </DialogHeader>
+
+            <form onSubmit={handleReduceStock} className="flex flex-col flex-1 overflow-hidden min-h-0">
+              <div className="flex-1 overflow-y-auto overscroll-contain py-3.5 space-y-3.5 pr-1 -mr-1">
+                {/* Item & Available info card */}
+                <div className="p-3 bg-amber-50/90 rounded-xl border border-amber-200/70 text-xs text-amber-950 flex flex-col xs:flex-row xs:items-center justify-between gap-2 shadow-2xs">
+                  <div>
+                    <span className="text-[#8C7361] font-bold block text-[10px] uppercase tracking-wider">
+                      {t('stock.itemToIssue')}
+                    </span>
+                    <strong className="font-extrabold text-sm text-[#2C1B10]">
+                      {reducingItem.name}
+                    </strong>
+                  </div>
+                  <div className="flex items-center gap-2 bg-white px-2.5 py-1 rounded-lg border border-amber-200 w-fit self-start xs:self-auto">
+                    <span className="font-extrabold text-amber-800 text-xs sm:text-sm">
+                      {Number(reducingItem.currentQuantity).toFixed(2)} {reducingItem.unitType}
+                    </span>
+                    {isOwner && Number(reducingItem.unitPrice || 0) > 0 && (
+                      <span className="text-[10px] text-[#8C7361] font-semibold border-l border-amber-200 pl-2">
+                        @{Number(reducingItem.unitPrice || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} {t('common.currency')}
+                      </span>
+                    )}
+                  </div>
+                </div>
+
+                {/* Quantity Input with 1-Tap Use Max Button */}
+                <div>
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="text-xs font-bold text-[#2C1B10] block uppercase tracking-wide">
+                      {t('stock.quantityToReduce')} ({reducingItem.unitType}) *
+                    </label>
+                    <button
+                      type="button"
+                      onClick={() => setReduceAmount(String(reducingItem.currentQuantity))}
+                      className="text-[11px] font-extrabold text-amber-800 bg-amber-100 hover:bg-amber-200 px-2 py-0.5 rounded-md transition-colors flex items-center gap-1 active:scale-95"
+                    >
+                      {t('stock.useMax')} ({Number(reducingItem.currentQuantity).toFixed(2)})
+                    </button>
+                  </div>
+                  <div className="relative">
+                    <Input 
+                      type="number" 
+                      step="0.001" 
+                      required 
+                      min="0.001"
+                      max={Number(reducingItem.currentQuantity)}
+                      value={reduceAmount} 
+                      onChange={(e) => setReduceAmount(e.target.value)}
+                      onFocus={(e) => e.target.select()}
+                      placeholder={`Max: ${Number(reducingItem.currentQuantity).toFixed(2)}`} 
+                      className="h-11 rounded-xl border-zinc-200 font-mono text-base pr-16 bg-white focus:ring-2 focus:ring-[#E87A18]" 
+                    />
+                    <span className="absolute right-3.5 top-1/2 -translate-y-1/2 text-xs font-bold text-[#8C7361] pointer-events-none">
+                      {reducingItem.unitType}
+                    </span>
+                  </div>
+                </div>
+
+                {/* Taken By Dropdown */}
+                <div>
+                  <label className="text-xs font-bold text-[#2C1B10] mb-1 block uppercase tracking-wide">
+                    {effectiveLocation === 'HOME' ? (t('stock.takenByLabel') || 'የወሰደው አካል / መድረሻ') : t('stock.takenByLabel')} *
+                  </label>
+                  {effectiveLocation === 'HOME' && (
+                    <div className="flex flex-wrap gap-1.5 mb-2">
+                      <button
+                        type="button"
+                        onClick={() => setReduceReceivedBy('ወደ ዳቦ ቤት ተወሰደ (To Bakery Shop)')}
+                        className="text-[11px] font-bold px-2.5 py-1 rounded-lg bg-amber-100 hover:bg-amber-200 text-amber-900 border border-amber-300 cursor-pointer"
+                      >
+                        🚚 ወደ ዳቦ ቤት ተወሰደ
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setReduceReceivedBy(user?.fullName || 'ባለቤት (Owner)')}
+                        className="text-[11px] font-bold px-2.5 py-1 rounded-lg bg-zinc-100 hover:bg-zinc-200 text-zinc-800 border border-zinc-300 cursor-pointer"
+                      >
+                        👤 ባለቤት ({user?.fullName || 'Owner'})
+                      </button>
+                    </div>
+                  )}
+                  <select 
+                    required
+                    value={reduceReceivedBy} 
+                    onChange={(e) => setReduceReceivedBy(e.target.value)}
+                    className="w-full border border-zinc-200 rounded-xl h-11 px-3 bg-white text-sm sm:text-base focus:ring-2 focus:ring-[#E87A18] focus:border-[#E87A18] outline-none text-[#2C1B10]"
+                  >
+                    <option value="" disabled>
+                      {isUsersLoading ? t('stock.loadingStaff') : t('stock.selectStaffMember')}
+                    </option>
+                    {effectiveLocation === 'HOME' && (
+                      <option value="ወደ ዳቦ ቤት ተወሰደ (To Bakery Shop)">🚚 ወደ ዳቦ ቤት ተወሰደ (To Bakery Shop)</option>
+                    )}
+                    {dbUsers.filter(u => u.isActive !== false).map((u) => (
+                      <option key={u.id} value={u.fullName}>
+                        {u.fullName} ({u.role?.replace('_', ' ')}{u.branch?.name ? ` • ${u.branch.name}` : ''})
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                {/* Notes Input */}
+                <div>
+                  <label className="text-xs font-bold text-[#2C1B10] mb-1 block uppercase tracking-wide">
+                    {t('common.notes')}
+                  </label>
+                  <Input 
+                    value={reduceReason} 
+                    onChange={(e) => setReduceReason(e.target.value)}
+                    placeholder={t("stock.dispatchReasonPlaceholder")} 
+                    className="h-11 rounded-xl border-zinc-200 text-sm sm:text-base bg-white focus:ring-2 focus:ring-[#E87A18]" 
+                  />
+                </div>
+              </div>
+
+              {/* Sticky Action Footer */}
+              <DialogFooter className="shrink-0 pt-3 border-t border-zinc-100 flex flex-col sm:flex-row gap-2 w-full mt-auto bg-white">
+                <Button
+                  type="submit"
+                  disabled={isSubmitting}
+                  className="w-full sm:w-auto h-11 bg-amber-600 hover:bg-amber-700 text-white font-bold rounded-xl order-1 sm:order-2 shadow-sm flex items-center justify-center gap-1.5"
+                >
+                  <MinusCircle className="w-4 h-4 shrink-0" />
+                  <span>{isSubmitting ? t('common.loading') : t('stock.recordUsageBtn')}</span>
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => setReducingItem(null)}
+                  className="w-full sm:w-auto h-11 rounded-xl border-[#EDE4D5] hover:bg-[#FAF6F0] order-2 sm:order-1 font-semibold text-[#8C7361]"
+                >
+                  {t('common.cancel')}
+                </Button>
+              </DialogFooter>
+            </form>
+          </DialogContent>
+        </Dialog>
+      )}
+
+        {/* Adjustment Modal (Stock Staff & Owner) */}
+        {adjustingItem && (
+          <Dialog open={!!adjustingItem} onOpenChange={(open) => !open && setAdjustingItem(null)}>
+            <DialogContent className="max-w-md bg-white border-[#EDE4D5] rounded-3xl p-6">
+              <DialogHeader>
+                <DialogTitle className="text-lg font-black text-[#2C1B10] flex items-center gap-2">
+                  <SlidersHorizontal className="w-5 h-5 text-orange-600 shrink-0" />
+                  {t('stock.auditAdjustTitle') || 'Adjust Stock Count (Audit)'}
+                </DialogTitle>
+              </DialogHeader>
+              <form onSubmit={handleAdjustStock}>
+                <div className="grid gap-3.5 py-3">
+                  {/* Prominent Advisory Notice Banner */}
+                  <div className="p-3 bg-amber-50 rounded-2xl border border-amber-300 text-xs text-amber-950 flex items-start gap-2.5 shadow-xs">
+                    <AlertCircle className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
+                    <div className="space-y-1">
+                      <p className="font-bold text-amber-900 text-xs">
+                        ማስጠንቀቂያ፡ የክምችት መጠን በቀጥታ ማስተካከል
+                      </p>
+                      <p className="text-[11px] text-amber-800 leading-relaxed font-medium">
+                        የተሳሳተ የክምችት መጠን ማስተካከል በሲስተሙ ኦዲት ላይ ይመዘገባል፤ ለድርጅቱ ባለቤትም አፋጣኝ የኦዲት ማሳወቂያ ይላካል። እባክዎ ትክክለኛውን ምክንያት ያስገቡ።
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="p-3 bg-orange-50/70 rounded-xl border border-orange-200 text-xs text-orange-900">
+                    Adjusting physical inventory count for <strong className="font-bold">{adjustingItem.name}</strong>. Current record: <span className="font-bold font-mono text-orange-800">{Number(adjustingItem.currentQuantity).toFixed(2)} {adjustingItem.unitType}</span>.
+                  </div>
+
+                  <div>
+                    <label className="text-xs font-bold text-[#2C1B10] mb-1 block uppercase">
+                      New Actual Physical Count ({adjustingItem.unitType}) *
+                    </label>
+                    <Input 
+                      type="number" 
+                      step="0.001" 
+                      required 
+                      min="0"
+                      value={adjustTo} 
+                      onChange={(e) => setAdjustTo(e.target.value)}
+                      onFocus={(e) => e.target.select()}
+                      placeholder="e.g. 48.00" 
+                      className="h-10 rounded-xl border-zinc-200 font-mono font-bold" 
+                    />
+                  </div>
+
+                  {(() => {
+                    const current = Number(adjustingItem.currentQuantity);
+                    const entered = parseFloat(adjustTo);
+                    if (!isNaN(entered)) {
+                      const delta = entered - current;
+                      const isGain = delta > 0;
+                      const isLoss = delta < 0;
+                      return (
+                        <div className={`p-2.5 rounded-xl border text-xs flex items-center justify-between font-bold ${
+                          delta === 0 
+                            ? 'bg-zinc-50 border-zinc-200 text-zinc-700' 
+                            : isLoss 
+                              ? 'bg-rose-50 border-rose-200 text-rose-800' 
+                              : 'bg-emerald-50 border-emerald-200 text-emerald-800'
+                        }`}>
+                          <span>Inventory Difference:</span>
+                          <span className="font-mono text-sm">
+                            {delta > 0 ? `+${delta.toFixed(3)}` : delta.toFixed(3)} {adjustingItem.unitType} {isLoss ? '(Shrinkage / Loss)' : isGain ? '(Surplus / Found)' : '(No change)'}
+                          </span>
+                        </div>
+                      );
+                    }
+                    return null;
+                  })()}
+
+                  <div>
+                    <label className="text-xs font-bold text-[#2C1B10] mb-1.5 block uppercase tracking-wider">
+                      Reason for Adjustment *
+                    </label>
+
+                    {/* Quick reason presets */}
+                    <div className="flex flex-wrap gap-1.5 mb-2.5">
+                      {[
+                        { label: "🥀 Expired / Spoilage", val: "Expired / Spoilage" },
+                        { label: "📦 Damaged Packaging", val: "Damaged Packaging / Contaminated" },
+                        { label: "🧹 Spillage / Handling", val: "Spillage / Handling Waste" },
+                        { label: "🔍 Audit Variance", val: "Physical Inventory Count Audit (Variance)" },
+                        { label: "📝 Other Reason", val: "" },
+                      ].map((preset) => {
+                        const isSelected = preset.val 
+                          ? adjustReason.startsWith(preset.val) 
+                          : (!adjustReason || (!adjustReason.startsWith("Expired") && !adjustReason.startsWith("Damaged") && !adjustReason.startsWith("Spillage") && !adjustReason.startsWith("Physical")));
+                        return (
+                          <button
+                            key={preset.label}
+                            type="button"
+                            onClick={() => {
+                              if (preset.val) {
+                                setAdjustReason(preset.val);
+                              } else {
+                                setAdjustReason("");
+                              }
+                            }}
+                            className={`px-2.5 py-1 rounded-lg text-[11px] font-bold transition-all border ${
+                              isSelected
+                                ? "bg-orange-600 text-white border-orange-600 shadow-2xs"
+                                : "bg-[#FAF7EE] text-[#4A2E1B] border-[#EDE4D5] hover:bg-orange-50"
+                            }`}
+                          >
+                            {preset.label}
+                          </button>
+                        );
+                      })}
+                    </div>
+
+                    <Input 
+                      required
+                      value={adjustReason} 
+                      onChange={(e) => setAdjustReason(e.target.value)} 
+                      placeholder={t("stock.reasonPlaceholder")} 
+                      className="h-10 rounded-xl border-zinc-200 text-xs" 
+                    />
+                  </div>
+                </div>
+
+                <DialogFooter className="flex flex-col sm:flex-row gap-2 w-full pt-2">
+                  <Button
+                    type="submit"
+                    disabled={isAdjusting}
+                    className="w-full sm:w-auto h-11 sm:h-10 bg-orange-600 hover:bg-orange-700 text-white font-bold rounded-xl order-1 sm:order-2 shadow-sm"
+                  >
+                    {isAdjusting ? t('common.loading') : "Confirm Adjustment"}
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={() => setAdjustingItem(null)}
+                    className="w-full sm:w-auto h-10 rounded-xl border-[#EDE4D5] hover:bg-[#FAF6F0] order-2 sm:order-1"
+                  >
+                    {t('common.cancel')}
+                  </Button>
+                </DialogFooter>
+              </form>
+            </DialogContent>
+          </Dialog>
+        )}
+
+      {/* Delete Confirmation Modal */}
+      <ConfirmModal
+        isOpen={!!itemToDelete}
+        onClose={() => setItemToDelete(null)}
+        onConfirm={confirmDelete}
+        title={t('stock.deleteModalTitle')}
+        description={`${t('stock.deleteModalDesc')} (${itemToDelete?.name})`}
+        confirmText={t('common.delete')}
+        variant="danger"
+      />
+    </DashboardLayout>
+  );
+}

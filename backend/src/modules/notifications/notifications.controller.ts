@@ -1,0 +1,136 @@
+import { Router, Response } from 'express';
+import { authMiddleware, type AuthRequest } from '../../middleware/auth.js';
+import { notificationsService } from './notifications.service.js';
+
+export const notificationsRouter = Router();
+
+const DEFAULT_VAPID_PUBLIC_KEY = 'BNuLLLYPRoS_3gl__0KwuYjlmkAsAptU5fyEnGxZ4WDn4k94dBGsXDA2pFjpEid6SUztE4iVljbioypCbkzvdU8';
+
+// Public endpoint to retrieve public VAPID key
+notificationsRouter.get('/public-key', (_req, res: Response) => {
+  res.json({
+    vapidPublicKey: process.env.VAPID_PUBLIC_KEY || DEFAULT_VAPID_PUBLIC_KEY,
+  });
+});
+
+// All following routes require authentication
+notificationsRouter.use(authMiddleware);
+
+notificationsRouter.get('/', async (req: AuthRequest, res: Response) => {
+  const unreadOnly = req.query.unreadOnly === 'true';
+  const page = parseInt(req.query.page as string, 10) || 1;
+  const limit = parseInt(req.query.limit as string, 10) || 20;
+
+  const result = await notificationsService.getNotifications(req.user!.id, {
+    unreadOnly,
+    page,
+    limit,
+  });
+
+  if (result.error) {
+    return res.status(result.status || 500).json({ error: result.error });
+  }
+
+  res.json(result.data);
+});
+
+notificationsRouter.post('/subscribe', async (req: AuthRequest, res: Response) => {
+  const { subscription } = req.body;
+  const userAgent = req.headers['user-agent'];
+
+  const result = await notificationsService.saveSubscription(
+    req.user!.id,
+    subscription,
+    userAgent
+  );
+
+  if (result.error) {
+    return res.status(result.status || 500).json({ error: result.error });
+  }
+
+  res.status(201).json(result.data);
+});
+
+notificationsRouter.post('/unsubscribe', async (req: AuthRequest, res: Response) => {
+  const { endpoint } = req.body;
+  if (!endpoint) {
+    return res.status(400).json({ error: 'Endpoint is required' });
+  }
+
+  const result = await notificationsService.removeSubscription(endpoint);
+  if (result.error) {
+    return res.status(result.status || 500).json({ error: result.error });
+  }
+
+  res.json(result.data);
+});
+
+notificationsRouter.patch('/:id/read', async (req: AuthRequest, res: Response) => {
+  const result = await notificationsService.markAsRead(req.user!.id, req.params.id);
+  if (result.error) {
+    return res.status(result.status || 500).json({ error: result.error });
+  }
+
+  res.json(result.data);
+});
+
+notificationsRouter.post('/read-all', async (req: AuthRequest, res: Response) => {
+  const result = await notificationsService.markAllAsRead(req.user!.id);
+  if (result.error) {
+    return res.status(result.status || 500).json({ error: result.error });
+  }
+
+  res.json(result.data);
+});
+
+notificationsRouter.post('/test', async (req: AuthRequest, res: Response) => {
+  await notificationsService.notifyUsers({
+    userIds: [req.user!.id],
+    branchId: req.user!.branchId,
+    type: 'NOTIFICATION_TEST',
+    titleKey: 'notifications.testTitle',
+    bodyKey: 'notifications.testBody',
+    variables: { userId: req.user!.id },
+    link: '/my-profile',
+  });
+
+  res.json({ success: true, message: 'Test notification sent' });
+});
+
+// User Notification Preferences
+notificationsRouter.get('/preferences', async (req: AuthRequest, res: Response) => {
+  const result = await notificationsService.getPreferences(req.user!.id);
+  if (result.error) {
+    return res.status(result.status || 500).json({ error: result.error });
+  }
+  res.json(result.data);
+});
+
+notificationsRouter.put('/preferences', async (req: AuthRequest, res: Response) => {
+  const result = await notificationsService.updatePreferences(req.user!.id, req.body);
+  if (result.error) {
+    return res.status(result.status || 500).json({ error: result.error });
+  }
+  res.json(result.data);
+});
+
+// Admin Delegation (Owner only)
+notificationsRouter.get('/admin-delegation', async (req: AuthRequest, res: Response) => {
+  const result = await notificationsService.getAdminDelegation();
+  if (result.error) {
+    return res.status(result.status || 500).json({ error: result.error });
+  }
+  res.json(result.data);
+});
+
+notificationsRouter.put('/admin-delegation', async (req: AuthRequest, res: Response) => {
+  if (req.user!.role !== 'OWNER') {
+    return res.status(403).json({ error: 'Only the Business Owner can configure Admin notification delegation' });
+  }
+  const enabled = req.body.adminReceivesAlerts === true;
+  const result = await notificationsService.setAdminDelegation(enabled);
+  if (result.error) {
+    return res.status(result.status || 500).json({ error: result.error });
+  }
+  res.json(result.data);
+});

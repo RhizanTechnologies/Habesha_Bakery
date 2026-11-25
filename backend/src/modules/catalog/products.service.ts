@@ -1,0 +1,603 @@
+import { prisma } from '../../lib/prisma.js';
+import type { ServiceResponse, ServiceResult } from '../../types/service-response.js';
+import { extractCreditItemsFromEntityId } from '../sessions/daily-sessions.service.js';
+
+function decimalToNum(v: unknown) {
+  if (v == null) return undefined;
+  if (typeof v === 'number') return v;
+  if (typeof v === 'string') return parseFloat(v) || 0;
+  if (typeof v === 'object' && v !== null) {
+    if (typeof (v as any).toNumber === 'function') return (v as any).toNumber();
+    const num = Number(v);
+    return isNaN(num) ? undefined : num;
+  }
+  return undefined;
+}
+
+export class ProductsService {
+  private static stockMapCache = new Map<string, { timestamp: number; data: Map<string, number> }>();
+  private static productsResultCache = new Map<string, { timestamp: number; data: any[] }>();
+  private static readonly CACHE_TTL_MS = 30 * 1000; // 30 seconds
+
+  public static clearCache() {
+    ProductsService.stockMapCache.clear();
+    ProductsService.productsResultCache.clear();
+  }
+
+  async getProducts(
+    categoryId?: string,
+    includeSubcategories?: boolean,
+    search?: string,
+    type?: string,
+    isActive?: boolean,
+    branchId?: string,
+    includeMetrics: boolean = true,
+    productionRole?: string
+  ): ServiceResult {
+    try {
+      const cacheKey = JSON.stringify({ categoryId, includeSubcategories, search, type, isActive, branchId, includeMetrics, productionRole });
+      const cached = ProductsService.productsResultCache.get(cacheKey);
+      if (cached && (Date.now() - cached.timestamp) < ProductsService.CACHE_TTL_MS) {
+        return { data: cached.data };
+      }
+
+      let categoryIds: string[] | undefined;
+
+    if (categoryId) {
+      if (includeSubcategories) {
+        const allCategories = await prisma.productCategory.findMany({
+          select: { id: true, parentId: true },
+        });
+        const findDescendants = (parentId: string): string[] => {
+          const children = allCategories.filter((c) => c.parentId === parentId);
+          return [parentId, ...children.flatMap((c) => findDescendants(c.id))];
+        };
+        categoryIds = findDescendants(categoryId);
+      } else {
+        categoryIds = [categoryId];
+      }
+    }
+
+    // Build type-based category filter if no explicit categoryId given
+    let typeCategoryIds: string[] | undefined;
+    if (type && !categoryId) {
+      const cats = await prisma.productCategory.findMany({
+        where: { type: type as any },
+        select: { id: true },
+      });
+      typeCategoryIds = cats.map((c) => c.id);
+    }
+
+    const effectiveCategoryIds = categoryIds ?? typeCategoryIds;
+
+    const where: any = {};
+    if (effectiveCategoryIds) where.categoryId = { in: effectiveCategoryIds };
+    if (typeof isActive === 'boolean') where.isActive = isActive;
+    if (search?.trim()) {
+      where.OR = [
+        { name: { contains: search.trim(), mode: 'insensitive' } },
+        { nameLatin: { contains: search.trim(), mode: 'insensitive' } },
+        { flavor: { contains: search.trim(), mode: 'insensitive' } },
+      ];
+    }
+    if (branchId) {
+      where.AND = [
+        ...(where.AND || []),
+        {
+          OR: [
+            { branchIds: { isEmpty: true } },
+            { branchIds: { has: branchId } },
+          ],
+        },
+      ];
+    }
+
+    if (productionRole) {
+      where.category = {
+        type: 'PRODUCED',
+        OR: [
+          { productionRole: productionRole as any },
+          { parent: { productionRole: productionRole as any } },
+        ],
+      };
+    }
+
+    const list = await prisma.product.findMany({
+      where,
+      include: {
+        category: {
+          select: {
+            id: true,
+            name: true,
+            type: true,
+            productionRole: true,
+            parentId: true,
+            parent: { select: { id: true, name: true, type: true, productionRole: true } },
+          },
+        },
+        financialCategory: { select: { id: true, name: true, type: true } },
+        _count: { select: { saleItems: true, productionItems: true } },
+      },
+      orderBy: [{ category: { name: 'asc' } }, { name: 'asc' }],
+    });
+
+    if (!includeMetrics) {
+      ProductsService.productsResultCache.set(cacheKey, { timestamp: Date.now(), data: list });
+      return { data: list };
+    }
+
+    // Run stock map and cumulative metrics in parallel to eliminate sequential round-trip waterfalls
+    const [
+      stockMap,
+      producedAgg,
+      deliveredAgg,
+      conversionsToAgg,
+      conversionsFromAgg,
+      salesAgg,
+      damagedAgg,
+      customerCreditList,
+    ] = await Promise.all([
+      this.calculateHouseStockMap(branchId),
+      prisma.productionItem.groupBy({
+        by: ['productId'],
+        _sum: { quantityProduced: true },
+        where: {
+          batch: {
+            status: { in: ['COMPLETED', 'STARTED'] },
+            ...(branchId ? { branchId } : {}),
+          },
+        },
+      }),
+      prisma.supplierDelivery.groupBy({
+        by: ['productId'],
+        _sum: { quantityReceived: true, returnedQuantity: true },
+        where: branchId ? { supplier: { branchId } } : {},
+      }),
+      prisma.productConversion.groupBy({
+        by: ['toProductId'],
+        _sum: { toQuantity: true },
+        where: branchId ? { branchId } : {},
+      }),
+      prisma.productConversion.groupBy({
+        by: ['fromProductId'],
+        _sum: { fromQuantity: true },
+        where: branchId ? { branchId } : {},
+      }),
+      prisma.saleItem.groupBy({
+        by: ['productId'],
+        _sum: { quantity: true },
+        where: branchId ? { sale: { session: { branchId } } } : {},
+      }),
+      prisma.leftoverRecord.groupBy({
+        by: ['productId'],
+        _sum: { damagedQuantity: true },
+        where: branchId ? { session: { branchId } } : {},
+      }),
+      prisma.customerCredit.findMany({
+        where: branchId ? { branchId } : {},
+        select: { description: true },
+      }),
+    ]);
+
+    const allProdsForName = await prisma.product.findMany({ select: { id: true, name: true } });
+    const productsByNameForEnrich = new Map<string, string>();
+    for (const p of allProdsForName) {
+      productsByNameForEnrich.set(p.name.trim().toLowerCase(), p.id);
+    }
+
+    const lifetimeCreditMap = new Map<string, number>();
+    for (const cc of customerCreditList) {
+      const items = extractCreditItemsFromEntityId(cc.description, productsByNameForEnrich);
+      for (const it of items) {
+        lifetimeCreditMap.set(it.productId, (lifetimeCreditMap.get(it.productId) || 0) + it.quantity);
+      }
+    }
+
+    const producedMap = new Map(producedAgg.map(a => [a.productId, a._sum.quantityProduced || 0]));
+    const deliveredMap = new Map(
+      deliveredAgg.map(a => [
+        a.productId,
+        Math.max(0, (a._sum.quantityReceived || 0) - (a._sum.returnedQuantity || 0)),
+      ])
+    );
+    const convToMap = new Map(conversionsToAgg.map(a => [a.toProductId, a._sum.toQuantity || 0]));
+    const convFromMap = new Map(conversionsFromAgg.map(a => [a.fromProductId, a._sum.fromQuantity || 0]));
+    const salesMap = new Map(salesAgg.map(a => [a.productId, a._sum.quantity || 0]));
+    const damagedMap = new Map(damagedAgg.map(a => [a.productId, a._sum.damagedQuantity || 0]));
+
+    const enrichedList = list.map((p) => {
+      const batchProduced = producedMap.get(p.id) || 0;
+      const totalConvertedIn = convToMap.get(p.id) || 0;
+      const totalConvertedOut = convFromMap.get(p.id) || 0;
+      // Converting into a product counts as producing it; converting from reduces its production count.
+      const totalProduced = Math.max(0, batchProduced + totalConvertedIn - totalConvertedOut);
+      const totalDelivered = deliveredMap.get(p.id) || 0;
+      const totalSold = (salesMap.get(p.id) || 0) + (lifetimeCreditMap.get(p.id) || 0);
+      const totalDamaged = damagedMap.get(p.id) || 0;
+      const currentHouseStock = stockMap.get(p.id) ?? 0;
+
+      return {
+        ...p,
+        currentHouseStock,
+        totalProduced,
+        totalDelivered,
+        totalConvertedIn,
+        totalConvertedOut,
+        totalSold,
+        totalDamaged,
+      };
+    });
+
+    ProductsService.productsResultCache.set(cacheKey, { timestamp: Date.now(), data: enrichedList });
+    return { data: enrichedList };
+    } catch (err: any) {
+      console.error('[ProductsService.getProducts] Error:', err);
+      return { error: err.message || 'Failed to fetch products', status: 500 };
+    }
+  }
+
+  /**
+   * Calculates real-time house stock across branches:
+   * Stock = (Produced + Resell Delivered + Converted In) - (Sold + Customer Credited + Converted Out + Damaged)
+   * Guaranteed to be real-time and fully synchronized when batches are created, edited, converted, or sold.
+   */
+  public async calculateHouseStockMap(branchId?: string): Promise<Map<string, number>> {
+    const cacheKey = branchId || 'ALL';
+    const cached = ProductsService.stockMapCache.get(cacheKey);
+    const now = Date.now();
+    if (cached && (now - cached.timestamp) < ProductsService.CACHE_TTL_MS) {
+      return cached.data;
+    }
+
+    const stockMap = new Map<string, number>();
+
+    const allProdsList = await prisma.product.findMany({ select: { id: true, name: true } });
+    const productsByName = new Map<string, string>();
+    for (const p of allProdsList) {
+      productsByName.set(p.name.trim().toLowerCase(), p.id);
+    }
+
+    const branches = branchId
+      ? [{ id: branchId }]
+      : await prisma.branch.findMany({ where: { isActive: true }, select: { id: true } });
+
+    for (const b of branches) {
+      const [producedAgg, deliveredAgg, convToAgg, convFromAgg, salesAgg, damagedAgg, customerCredits] = await Promise.all([
+        prisma.productionItem.groupBy({
+          by: ['productId'],
+          _sum: { quantityProduced: true },
+          where: { batch: { branchId: b.id, status: { in: ['COMPLETED', 'STARTED'] } } },
+        }),
+        prisma.supplierDelivery.groupBy({
+          by: ['productId'],
+          _sum: { quantityReceived: true, returnedQuantity: true },
+          where: { supplier: { branchId: b.id } },
+        }),
+        prisma.productConversion.groupBy({
+          by: ['toProductId'],
+          _sum: { toQuantity: true },
+          where: { branchId: b.id },
+        }),
+        prisma.productConversion.groupBy({
+          by: ['fromProductId'],
+          _sum: { fromQuantity: true },
+          where: { branchId: b.id },
+        }),
+        prisma.saleItem.groupBy({
+          by: ['productId'],
+          _sum: { quantity: true },
+          where: {
+            OR: [
+              { sale: { branchId: b.id } },
+              { sale: { session: { branchId: b.id } } },
+            ],
+          },
+        }),
+        prisma.leftoverRecord.groupBy({
+          by: ['productId'],
+          _sum: { damagedQuantity: true },
+          where: { session: { branchId: b.id } },
+        }),
+        prisma.customerCredit.findMany({
+          where: { branchId: b.id },
+          select: { description: true },
+        }),
+      ]);
+
+      const creditMap = new Map<string, number>();
+      for (const cc of customerCredits) {
+        const items = extractCreditItemsFromEntityId(cc.description, productsByName);
+        for (const it of items) {
+          creditMap.set(it.productId, (creditMap.get(it.productId) || 0) + it.quantity);
+        }
+      }
+
+      const pMap = new Map(producedAgg.map((a) => [a.productId, a._sum.quantityProduced || 0]));
+      const dMap = new Map(deliveredAgg.map((a) => [a.productId, Math.max(0, (a._sum.quantityReceived || 0) - (a._sum.returnedQuantity || 0))]));
+      const toMap = new Map(convToAgg.map((a) => [a.toProductId, a._sum.toQuantity || 0]));
+      const fromMap = new Map(convFromAgg.map((a) => [a.fromProductId, a._sum.fromQuantity || 0]));
+      const sMap = new Map(salesAgg.map((a) => [a.productId, a._sum.quantity || 0]));
+      const damMap = new Map(damagedAgg.map((a) => [a.productId, a._sum.damagedQuantity || 0]));
+
+      for (const p of allProdsList) {
+        const produced = pMap.get(p.id) || 0;
+        const delivered = dMap.get(p.id) || 0;
+        const convIn = toMap.get(p.id) || 0;
+        const sold = sMap.get(p.id) || 0;
+        const credited = creditMap.get(p.id) || 0;
+        const convOut = fromMap.get(p.id) || 0;
+        const damaged = damMap.get(p.id) || 0;
+
+        const currentQty = Math.max(
+          0,
+          (produced + delivered + convIn) - (sold + credited + convOut + damaged)
+        );
+        stockMap.set(p.id, (stockMap.get(p.id) || 0) + currentQty);
+      }
+    }
+
+    ProductsService.stockMapCache.set(cacheKey, { timestamp: Date.now(), data: stockMap });
+    return stockMap;
+  }
+
+  async getProductById(id: string, branchId?: string): ServiceResult {
+    const product = await prisma.product.findUnique({
+      where: { id },
+      include: {
+        category: {
+          include: {
+            parent: { select: { id: true, name: true, type: true, productionRole: true } },
+          },
+        },
+        financialCategory: true,
+      },
+    });
+    if (!product) {
+      return { error: 'Product not found', status: 404 };
+    }
+
+    const stockMap = await this.calculateHouseStockMap(branchId);
+    const currentHouseStock = stockMap.get(id) ?? 0;
+
+    const [producedAgg, deliveredAgg] = await Promise.all([
+      prisma.productionItem.aggregate({
+        where: {
+          productId: id,
+          batch: {
+            status: { in: ['COMPLETED', 'STARTED'] },
+            ...(branchId ? { branchId } : {}),
+          },
+        },
+        _sum: { quantityProduced: true },
+      }),
+      prisma.supplierDelivery.aggregate({
+        where: {
+          productId: id,
+          ...(branchId ? { supplier: { branchId } } : {}),
+        },
+        _sum: { quantityReceived: true, returnedQuantity: true },
+      }),
+    ]);
+
+    const [convToAgg, convFromAgg] = await Promise.all([
+      prisma.productConversion.aggregate({
+        where: {
+          toProductId: id,
+          ...(branchId ? { branchId } : {}),
+        },
+        _sum: { toQuantity: true },
+      }),
+      prisma.productConversion.aggregate({
+        where: {
+          fromProductId: id,
+          ...(branchId ? { branchId } : {}),
+        },
+        _sum: { fromQuantity: true },
+      }),
+    ]);
+
+    const [salesAgg, damagedAgg] = await Promise.all([
+      prisma.saleItem.aggregate({
+        where: {
+          productId: id,
+          ...(branchId ? { sale: { session: { branchId } } } : {}),
+        },
+        _sum: { quantity: true },
+      }),
+      prisma.leftoverRecord.aggregate({
+        where: {
+          productId: id,
+          ...(branchId ? { session: { branchId } } : {}),
+        },
+        _sum: { damagedQuantity: true },
+      }),
+    ]);
+
+    const batchProduced = producedAgg._sum.quantityProduced || 0;
+    const totalDelivered = Math.max(
+      0,
+      (deliveredAgg._sum.quantityReceived || 0) - (deliveredAgg._sum.returnedQuantity || 0)
+    );
+    const totalConvertedIn = convToAgg._sum.toQuantity || 0;
+    const totalConvertedOut = convFromAgg._sum.fromQuantity || 0;
+    const totalProduced = Math.max(0, batchProduced + totalConvertedIn - totalConvertedOut);
+    const totalSold = salesAgg._sum.quantity || 0;
+    const totalDamaged = damagedAgg._sum.damagedQuantity || 0;
+
+    return {
+      data: {
+        ...product,
+        currentHouseStock,
+        totalProduced,
+        totalDelivered,
+        totalConvertedIn,
+        totalConvertedOut,
+        totalSold,
+        totalDamaged,
+      },
+    };
+  }
+
+  async createProduct(body: Record<string, unknown>): ServiceResult {
+    const { categoryId, name, nameLatin, flavor, unitType, basePrice, buyPrice, imageUrl, financialCategoryId, branchIds } = body;
+    
+    if (!categoryId || !name || !unitType || basePrice == null) {
+      return { error: 'categoryId, name, unitType, basePrice required', status: 400 };
+    }
+
+    const trimmedName = String(name).trim();
+    if (!trimmedName) {
+      return { error: 'Product name cannot be empty', status: 400 };
+    }
+
+    const existingName = await prisma.product.findFirst({
+      where: { name: { equals: trimmedName, mode: 'insensitive' } },
+    });
+    if (existingName) {
+      return { error: `A product with name "${trimmedName}" already exists. Product names must be unique.`, status: 400 };
+    }
+
+    const fcErr = await this.validateProductFinancialCategory(financialCategoryId as string | undefined);
+    if (fcErr) {
+      return { error: fcErr, status: 400 };
+    }
+
+    const category = await prisma.productCategory.findUnique({
+      where: { id: categoryId as string },
+      select: { type: true },
+    });
+    const isResell = category?.type === 'RESELL';
+
+    const branchIdsArray = Array.isArray(branchIds)
+      ? branchIds.filter((b): b is string => typeof b === 'string' && b.trim().length > 0)
+      : [];
+
+    const product = await prisma.product.create({
+      data: {
+        categoryId: categoryId as string,
+        financialCategoryId:
+          financialCategoryId != null && String(financialCategoryId).trim() !== ''
+            ? String(financialCategoryId)
+            : null,
+        name: trimmedName,
+        nameLatin: nameLatin ? String(nameLatin).trim() : null,
+        flavor: flavor ? String(flavor).trim() : null,
+        unitType: unitType as any,
+        basePrice: decimalToNum(basePrice) ?? 0,
+        // Buying cost is only available for RESELL products, never for in-house PRODUCED products
+        buyPrice: isResell && buyPrice != null ? decimalToNum(buyPrice) ?? null : null,
+        imageUrl: imageUrl ? String(imageUrl).trim() : null,
+        branchIds: branchIdsArray,
+      },
+      include: { category: true, financialCategory: true },
+    });
+    ProductsService.clearCache();
+    return { data: product };
+  }
+
+  async updateProduct(id: string, body: Record<string, unknown>): ServiceResult {
+    const { categoryId, name, nameLatin, flavor, unitType, basePrice, buyPrice, imageUrl, isActive, financialCategoryId, branchIds } = body;
+    
+    if (financialCategoryId !== undefined) {
+      const fcErr = await this.validateProductFinancialCategory(
+        financialCategoryId === null || financialCategoryId === '' ? null : String(financialCategoryId)
+      );
+      if (fcErr) {
+        return { error: fcErr, status: 400 };
+      }
+    }
+
+    const data: Record<string, unknown> = {};
+    if (categoryId != null) data.categoryId = categoryId;
+    if (name != null) {
+      const trimmedName = String(name).trim();
+      if (!trimmedName) {
+        return { error: 'Product name cannot be empty', status: 400 };
+      }
+      const existingName = await prisma.product.findFirst({
+        where: {
+          name: { equals: trimmedName, mode: 'insensitive' },
+          id: { not: id },
+        },
+      });
+      if (existingName) {
+        return { error: `A product with name "${trimmedName}" already exists. Product names must be unique.`, status: 400 };
+      }
+      data.name = trimmedName;
+    }
+    if (nameLatin !== undefined) data.nameLatin = nameLatin ? String(nameLatin).trim() : null;
+    if (flavor !== undefined) data.flavor = flavor ? String(flavor).trim() : null;
+    if (unitType != null) data.unitType = unitType;
+    if (basePrice != null) data.basePrice = decimalToNum(basePrice);
+
+    // Resolve category to enforce buyPrice availability strictly for RESELL items
+    const targetCatId = (categoryId != null
+      ? categoryId
+      : (await prisma.product.findUnique({ where: { id }, select: { categoryId: true } }))?.categoryId) as string | undefined;
+
+    let isResell = false;
+    if (targetCatId) {
+      const cat = await prisma.productCategory.findUnique({ where: { id: targetCatId }, select: { type: true } });
+      isResell = cat?.type === 'RESELL';
+    }
+
+    if (!isResell) {
+      // Produced products NEVER have a buyPrice
+      data.buyPrice = null;
+    } else if (buyPrice !== undefined) {
+      data.buyPrice = buyPrice != null ? decimalToNum(buyPrice) : null;
+    }
+
+    if (imageUrl !== undefined) data.imageUrl = imageUrl ? String(imageUrl).trim() : null;
+    if (typeof isActive === 'boolean') data.isActive = isActive;
+    if (branchIds !== undefined) {
+      data.branchIds = Array.isArray(branchIds)
+        ? branchIds.filter((b): b is string => typeof b === 'string' && b.trim().length > 0)
+        : [];
+    }
+    if (financialCategoryId !== undefined) {
+      data.financialCategoryId =
+        financialCategoryId === null || financialCategoryId === '' ? null : String(financialCategoryId);
+    }
+
+    const product = await prisma.product.update({
+      where: { id },
+      data: data as any,
+      include: { category: true, financialCategory: true },
+    });
+    ProductsService.clearCache();
+    return { data: product };
+  }
+
+  async deleteProduct(id: string): ServiceResult {
+    const product = await prisma.product.findUnique({
+      where: { id },
+      include: { _count: { select: { saleItems: true, productionItems: true, leftoverRecords: true, supplierDeliveries: true } } },
+    });
+    if (!product) return { error: 'Product not found', status: 404 };
+
+    const usageCount =
+      product._count.saleItems +
+      product._count.productionItems +
+      product._count.leftoverRecords +
+      product._count.supplierDeliveries;
+
+    ProductsService.clearCache();
+    if (usageCount > 0) {
+      // Soft-delete: mark inactive instead of hard delete
+      await prisma.product.update({ where: { id }, data: { isActive: false } });
+      return { data: { message: 'Product deactivated (has existing records; hard delete blocked)', deactivated: true } };
+    }
+
+    await prisma.product.delete({ where: { id } });
+    return { data: { message: 'Product deleted successfully', deactivated: false } };
+  }
+
+  private async validateProductFinancialCategory(financialCategoryId: string | null | undefined): Promise<string | null> {
+    if (financialCategoryId == null || financialCategoryId === '') return null;
+    const fc = await prisma.financialCategory.findUnique({ where: { id: financialCategoryId } });
+    if (!fc) return 'financialCategoryId: category not found';
+    if (fc.type !== 'REVENUE') return 'financialCategoryId must reference a REVENUE financial category';
+    return null;
+  }
+}

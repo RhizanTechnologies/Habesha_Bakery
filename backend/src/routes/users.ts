@@ -1,0 +1,253 @@
+import { Router } from 'express';
+import bcrypt from 'bcryptjs';
+import multer from 'multer';
+import path from 'path';
+import { prisma } from '../lib/prisma.js';
+import { authMiddleware, requireRole, type AuthRequest } from '../middleware/auth.js';
+
+import fs from 'fs';
+
+export const usersRouter = Router();
+usersRouter.use(authMiddleware);
+
+const uploadsDir = process.env.VERCEL ? path.join('/tmp', 'uploads') : path.join(process.cwd(), 'uploads');
+try {
+  if (!fs.existsSync(uploadsDir)) {
+    fs.mkdirSync(uploadsDir, { recursive: true });
+  }
+} catch (e) {
+  console.warn('[Uploads Directory]', e);
+}
+
+// Configure multer for file uploads
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    cb(null, uploadsDir);
+  },
+  filename: (req, file, cb) => {
+    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+    cb(null, uniqueSuffix + path.extname(file.originalname));
+  }
+});
+const upload = multer({ storage });
+
+usersRouter.get('/roles', requireRole('OWNER', 'ADMIN'), (req, res) => {
+  res.json(['OWNER', 'ADMIN', 'BAKER', 'CAKE_WORKER', 'CASHIER', 'SAMBUSA_WORKER', 'STOCK_KEEPER', 'EMPLOYEE']);
+});
+
+usersRouter.get('/me/dashboard', async (req: AuthRequest, res) => {
+  if (!req.user?.id) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+  const userId = req.user.id;
+  try {
+    const rows: any = await prisma.$queryRaw`
+      SELECT 
+        (
+          SELECT row_to_json(u)
+          FROM (
+            SELECT 
+              usr.id, usr."fullName", usr.phone, usr.role, usr."branchId", usr."isActive", 
+              usr."createdAt", usr.salary, usr."dailyExpense", usr."startDate", usr."lastPaidDate", usr.shift, usr."filesUrl",
+              CASE WHEN b.id IS NOT NULL THEN json_build_object('id', b.id, 'name', b.name) ELSE NULL END AS branch
+            FROM "User" usr
+            LEFT JOIN "Branch" b ON b.id = usr."branchId"
+            WHERE usr.id = ${userId}
+          ) u
+        ) AS user,
+        (
+          SELECT COALESCE(json_agg(pr ORDER BY pr.year DESC, pr.month DESC), '[]'::json)
+          FROM "PayrollRecord" pr
+          WHERE pr."userId" = ${userId}
+        ) AS "payrollRecords",
+        (
+          SELECT COALESCE(json_agg(l ORDER BY l."createdAt" DESC), '[]'::json)
+          FROM (
+            SELECT 
+              ln.id, ln."branchId", ln.type, ln."entityId", ln."userId", ln."totalAmount", 
+              ln."remainingBalance", ln.status, ln.date, ln."createdAt", ln."updatedAt",
+              COALESCE(
+                (
+                  SELECT json_agg(lp ORDER BY lp."createdAt" DESC)
+                  FROM "LoanPayment" lp
+                  WHERE lp."loanId" = ln.id
+                ),
+                '[]'::json
+              ) AS payments
+            FROM "Loan" ln
+            WHERE ln."userId" = ${userId}
+          ) l
+        ) AS loans,
+        (
+          SELECT COALESCE(json_agg(p ORDER BY p.date DESC), '[]'::json)
+          FROM "Penalty" p
+          WHERE p."userId" = ${userId}
+        ) AS penalties
+    `;
+    const result = rows?.[0];
+    if (!result?.user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+    return res.json({
+      user: result.user,
+      payrollRecords: result.payrollRecords || [],
+      loans: result.loans || [],
+      penalties: result.penalties || [],
+    });
+  } catch {
+    const [user, payrollRecords, loans, penalties] = await Promise.all([
+      prisma.user.findUnique({
+        where: { id: userId },
+        select: { ...userSelect, branch: { select: { id: true, name: true } } },
+      }),
+      prisma.payrollRecord.findMany({
+        where: { userId },
+        orderBy: [{ year: 'desc' }, { month: 'desc' }],
+      }),
+      prisma.loan.findMany({
+        where: { userId },
+        include: { payments: { orderBy: { createdAt: 'desc' } } },
+        orderBy: { createdAt: 'desc' },
+      }),
+      prisma.penalty.findMany({
+        where: { userId },
+        orderBy: { date: 'desc' },
+      }),
+    ]);
+
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    res.json({
+      user,
+      payrollRecords,
+      loans,
+      penalties,
+    });
+  }
+});
+
+const userSelect = { id: true, fullName: true, phone: true, role: true, branchId: true, isActive: true, createdAt: true, salary: true, dailyExpense: true, startDate: true, lastPaidDate: true, shift: true, filesUrl: true } as const;
+
+usersRouter.get('/', requireRole('OWNER', 'ADMIN', 'STOCK_KEEPER'), async (req: AuthRequest, res) => {
+  const branchId = req.query.branchId as string | undefined;
+  const where = branchId ? { branchId } : {};
+  const isPrivileged = req.user?.role === 'OWNER' || req.user?.role === 'ADMIN';
+  const list = await prisma.user.findMany({
+    where,
+    select: {
+      id: true,
+      fullName: true,
+      phone: true,
+      role: true,
+      branchId: true,
+      isActive: true,
+      createdAt: true,
+      salary: isPrivileged,
+      dailyExpense: isPrivileged,
+      startDate: true,
+      lastPaidDate: true,
+      shift: true,
+      filesUrl: isPrivileged,
+      branch: { select: { name: true } },
+    },
+    orderBy: { fullName: 'asc' },
+  });
+  res.json(list);
+});
+
+usersRouter.get('/:id', requireRole('OWNER', 'ADMIN'), async (req, res) => {
+  const user = await prisma.user.findUnique({
+    where: { id: req.params.id },
+    select: { ...userSelect, branch: true },
+  });
+  if (!user) return res.status(404).json({ error: 'User not found' });
+  res.json(user);
+});
+
+function toDecimal(v: unknown): number | null {
+  if (v == null) return null;
+  if (typeof v === 'number') return v;
+  if (typeof v === 'string') { const n = parseFloat(v); return Number.isNaN(n) ? null : n; }
+  return null;
+}
+
+usersRouter.post('/', requireRole('OWNER', 'ADMIN'), upload.single('file'), async (req, res) => {
+  const { fullName, phone, password, role, branchId, salary, dailyExpense, startDate, lastPaidDate, shift } = req.body as {
+    fullName: string;
+    phone: string;
+    password: string;
+    role: string;
+    branchId?: string;
+    salary?: number | string;
+    dailyExpense?: number | string;
+    startDate?: string;
+    lastPaidDate?: string;
+    shift?: string;
+  };
+  
+  let filesUrl = req.body.filesUrl as string | undefined;
+  if (req.file) {
+    filesUrl = `/uploads/${req.file.filename}`;
+  }
+
+  const phoneTrim = phone?.trim();
+  if (!fullName?.trim() || !phoneTrim || !password) {
+    return res.status(400).json({ error: 'fullName, phone, password required' });
+  }
+  const existing = await prisma.user.findUnique({ where: { phone: phoneTrim } });
+  if (existing) return res.status(400).json({ error: 'Phone already exists' });
+  const passwordHash = await bcrypt.hash(password, 10);
+  const salaryNum = toDecimal(salary);
+  const dailyExpenseNum = toDecimal(dailyExpense);
+  const user = await prisma.user.create({
+    data: {
+      fullName: fullName.trim(),
+      phone: phoneTrim,
+      passwordHash,
+      role: role as any,
+      branchId: branchId || null,
+      salary: salaryNum ?? undefined,
+      dailyExpense: dailyExpenseNum ?? undefined,
+      startDate: startDate ? new Date(startDate) : undefined,
+      lastPaidDate: lastPaidDate ? new Date(lastPaidDate) : undefined,
+      shift: shift === 'DAY' || shift === 'NIGHT' ? shift : undefined,
+      filesUrl: filesUrl?.trim() || undefined,
+    },
+    select: { ...userSelect, branch: { select: { name: true } } },
+  });
+  res.status(201).json(user);
+});
+
+usersRouter.patch('/:id', requireRole('OWNER', 'ADMIN'), upload.single('file'), async (req, res) => {
+  const { fullName, phone, password, role, branchId, isActive, salary, dailyExpense, startDate, lastPaidDate, shift } = req.body as Record<string, unknown>;
+  
+  let filesUrl = req.body.filesUrl as string | undefined;
+  if (req.file) {
+    filesUrl = `/uploads/${req.file.filename}`;
+  }
+
+  const data: Record<string, unknown> = {};
+  if (typeof fullName === 'string') data.fullName = fullName.trim();
+  if (typeof phone === 'string') data.phone = phone?.trim() || null;
+  if (typeof role === 'string') data.role = role;
+  if (branchId !== undefined) data.branchId = branchId || null;
+  if (typeof isActive === 'boolean') data.isActive = isActive;
+  if (salary !== undefined) data.salary = toDecimal(salary);
+  if (dailyExpense !== undefined) data.dailyExpense = toDecimal(dailyExpense);
+  if (startDate !== undefined) data.startDate = startDate ? new Date(startDate as string) : null;
+  if (lastPaidDate !== undefined) data.lastPaidDate = lastPaidDate ? new Date(lastPaidDate as string) : null;
+  if (shift === 'DAY' || shift === 'NIGHT') data.shift = shift;
+  else if (shift === null || shift === '') data.shift = null;
+  if (filesUrl !== undefined) data.filesUrl = typeof filesUrl === 'string' ? filesUrl.trim() || null : null;
+  if (typeof password === 'string' && password) {
+    data.passwordHash = await bcrypt.hash(password, 10);
+  }
+  const user = await prisma.user.update({
+    where: { id: req.params.id },
+    data: data as any,
+    select: { ...userSelect, branch: { select: { name: true } } },
+  });
+  res.json(user);
+});

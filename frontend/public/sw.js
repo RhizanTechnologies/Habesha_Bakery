@@ -1,0 +1,135 @@
+const CACHE_NAME = 'habesha-bakery-erp-v1';
+const STATIC_ASSETS = [
+  '/',
+  '/manifest.json',
+  '/icons/icon-192.png',
+  '/icons/icon-512.png',
+  '/icons/badge-96.png',
+  '/icons/apple-touch-icon.png',
+];
+
+self.addEventListener('install', (event) => {
+  self.skipWaiting();
+  event.waitUntil(
+    caches.open(CACHE_NAME).then((cache) => {
+      return cache.addAll(STATIC_ASSETS).catch(() => {});
+    })
+  );
+});
+
+self.addEventListener('activate', (event) => {
+  event.waitUntil(
+    caches.keys().then((keys) =>
+      Promise.all(
+        keys.map((key) => {
+          if (key !== CACHE_NAME) {
+            return caches.delete(key);
+          }
+        })
+      )
+    ).then(() => self.clients.claim())
+  );
+});
+
+// Fetch listener - Network-first with cache fallback (bypasses API requests)
+self.addEventListener('fetch', (event) => {
+  const url = new URL(event.request.url);
+
+  // Never cache API calls, auth, or mutation requests
+  if (
+    event.request.method !== 'GET' ||
+    url.pathname.startsWith('/api') ||
+    url.pathname.startsWith('/uploads')
+  ) {
+    return;
+  }
+
+  event.respondWith(
+    fetch(event.request)
+      .then((response) => {
+        // If valid network response, clone to cache for offline fallback
+        if (response && response.status === 200 && response.type === 'basic') {
+          const responseToCache = response.clone();
+          caches.open(CACHE_NAME).then((cache) => {
+            cache.put(event.request, responseToCache);
+          });
+        }
+        return response;
+      })
+      .catch(() => {
+        return caches.match(event.request).then((cached) => {
+          return cached || caches.match('/');
+        });
+      })
+  );
+});
+
+// Web Push event listener
+self.addEventListener('push', function (event) {
+  if (!event.data) return;
+
+  let payload = {};
+  try {
+    payload = event.data.json();
+  } catch (e) {
+    payload = {
+      title: 'Habesha Bakery ERP',
+      body: event.data.text(),
+      link: '/',
+    };
+  }
+
+  const title = payload.title || 'Habesha Bakery ERP';
+  const body = payload.body || 'You have a new update in Habesha Bakery ERP';
+
+  const options = {
+    body: body,
+    icon: payload.icon || '/icons/icon-192.png',
+    badge: payload.badge || '/icons/badge-96.png',
+    data: {
+      link: payload.link || '/',
+      timestamp: payload.timestamp || Date.now(),
+    },
+    vibrate: [300, 100, 300, 100, 300],
+    tag: payload.id || `${payload.type || 'alert'}-${Date.now()}`,
+    renotify: true,
+    requireInteraction: true,
+  };
+
+  event.waitUntil(
+    self.registration.showNotification(title, options).then(() => {
+      return self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((clientList) => {
+        for (const client of clientList) {
+          client.postMessage({
+            type: 'PUSH_NOTIFICATION_RECEIVED',
+            payload: { title, body, ...payload }
+          });
+        }
+      });
+    })
+  );
+});
+
+// Notification Click event listener
+self.addEventListener('notificationclick', function (event) {
+  event.notification.close();
+  let targetLink = (event.notification.data && event.notification.data.link) || '/';
+  if (targetLink.startsWith('/dashboard')) {
+    targetLink = targetLink.replace(/^\/dashboard(?=\/|$)/, '') || '/';
+  }
+
+  event.waitUntil(
+    clients.matchAll({ type: 'window', includeUncontrolled: true }).then(function (clientList) {
+      for (let i = 0; i < clientList.length; i++) {
+        const client = clientList[i];
+        if ('focus' in client) {
+          client.navigate(targetLink);
+          return client.focus();
+        }
+      }
+      if (clients.openWindow) {
+        return clients.openWindow(targetLink);
+      }
+    })
+  );
+});

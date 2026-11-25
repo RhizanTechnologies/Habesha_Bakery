@@ -1,0 +1,95 @@
+import { Request, Response, NextFunction } from 'express';
+import jwt from 'jsonwebtoken';
+import { prisma } from '../lib/prisma.js';
+import { hasPrivilege } from '../lib/privileges.js';
+
+export function getJwtSecret(): string {
+  const secret = process.env.JWT_SECRET;
+  if (!secret) {
+    if (process.env.NODE_ENV === 'production') {
+      throw new Error('FATAL: JWT_SECRET environment variable is missing in production');
+    }
+    return 'dev-secret';
+  }
+  return secret;
+}
+
+export interface JwtPayload {
+  userId: string;
+  role: string;
+}
+
+export interface AuthUser {
+  id: string;
+  role: string;
+  branchId: string | null;
+  customRoleId?: string | null;
+  permissions?: string[];
+}
+
+export interface AuthRequest extends Request {
+  user?: AuthUser;
+  tenantId?: string;
+}
+
+export async function authMiddleware(req: AuthRequest, res: Response, next: NextFunction) {
+  const authHeader = req.headers.authorization;
+  if (!authHeader?.startsWith('Bearer ')) {
+    return res.status(401).json({ error: 'Missing or invalid Authorization header' });
+  }
+  const token = authHeader.slice(7);
+  try {
+    const payload = jwt.verify(token, getJwtSecret()) as JwtPayload;
+    const user = await prisma.user.findUnique({
+      where: { id: payload.userId },
+      select: {
+        id: true,
+        phone: true,
+        role: true,
+        branchId: true,
+        customRoleId: true,
+        permissions: true,
+        isActive: true,
+        branch: { select: { isActive: true } },
+      },
+    });
+    if (!user || !user.isActive || (user.role !== 'OWNER' && user.branch && !user.branch.isActive)) {
+      return res.status(401).json({ error: 'User or branch is inactive' });
+    }
+    req.user = {
+      id: user.id,
+      role: user.role,
+      branchId: user.branchId,
+      customRoleId: user.customRoleId,
+      permissions: user.permissions || [],
+    };
+    next();
+  } catch {
+    return res.status(401).json({ error: 'Invalid or expired token' });
+  }
+}
+
+export function requireRole(...roles: string[]) {
+  return (req: AuthRequest, res: Response, next: NextFunction) => {
+    if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
+    if (!roles.includes(req.user.role)) {
+      return res.status(403).json({ error: 'Forbidden: insufficient role' });
+    }
+    next();
+  };
+}
+
+export function requirePrivilege(privilegeKey: string, ...fallbackRoles: string[]) {
+  return (req: AuthRequest, res: Response, next: NextFunction) => {
+    if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
+    if (hasPrivilege(req.user, privilegeKey)) {
+      return next();
+    }
+    if (fallbackRoles.length > 0 && fallbackRoles.includes(req.user.role)) {
+      return next();
+    }
+    return res.status(403).json({
+      error: `Forbidden: missing required privilege "${privilegeKey}"`,
+    });
+  };
+}

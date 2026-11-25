@@ -1,0 +1,172 @@
+import { prisma } from '../../lib/prisma.js';
+import type { ServiceResponse, ServiceResult } from '../../types/service-response.js';
+import { buildPaginatedResponse } from '../../lib/pagination.js';
+import { notificationsService } from '../notifications/notifications.service.js';
+
+import { decimalToNum } from '../../lib/decimal.js';
+
+export class PenaltiesService {
+  async getMyPenalties(userId?: string): ServiceResult {
+    if (!userId) {
+      return { error: 'Unauthorized', status: 401 };
+    }
+    const list = await prisma.penalty.findMany({
+      where: { userId },
+      include: { user: { select: { id: true, fullName: true, phone: true } } },
+      orderBy: { date: 'desc' },
+    });
+    return { data: list };
+  }
+
+  async getPenalties(
+    userId?: string,
+    isDeducted?: string,
+    branchId?: string,
+    page?: number,
+    limit?: number,
+    search?: string
+  ): ServiceResult {
+    const where: any = {};
+    if (userId) where.userId = userId;
+    if (isDeducted !== undefined) where.isDeducted = isDeducted === 'true';
+    if (branchId) where.user = { branchId };
+    if (search && search.trim()) {
+      const q = search.trim();
+      where.OR = [
+        { reason: { contains: q, mode: 'insensitive' } },
+        { user: { fullName: { contains: q, mode: 'insensitive' } } },
+        { user: { phone: { contains: q, mode: 'insensitive' } } },
+      ];
+    }
+
+    if (page != null && limit != null) {
+      const [total, list] = await Promise.all([
+        prisma.penalty.count({ where }),
+        prisma.penalty.findMany({
+          where,
+          include: { user: { select: { id: true, fullName: true, phone: true, role: true } } },
+          orderBy: { date: 'desc' },
+          skip: (page - 1) * limit,
+          take: limit,
+        }),
+      ]);
+      return { data: buildPaginatedResponse(list, total, page, limit) };
+    }
+
+    const list = await prisma.penalty.findMany({
+      where,
+      include: { user: { select: { id: true, fullName: true, phone: true, role: true } } },
+      orderBy: { date: 'desc' },
+    });
+    return { data: list };
+  }
+
+  async createPenalty(body: any): ServiceResult {
+    const { userId, amount, reason, date, isSigned, status } = body;
+    if (!userId || amount == null || !reason?.trim()) {
+      return { error: 'userId, amount, reason required', status: 400 };
+    }
+    const d = date ? new Date(date) : new Date();
+    d.setHours(0, 0, 0, 0);
+    const initialStatus = isSigned === true || isSigned === 'true' || status === 'APPROVED' ? 'APPROVED' : 'PENDING_APPROVAL';
+    const penalty = await prisma.penalty.create({
+      data: {
+        userId,
+        amount: decimalToNum(amount),
+        reason: reason.trim(),
+        date: d,
+        status: initialStatus,
+      },
+      include: { user: { select: { id: true, fullName: true, phone: true } } },
+    });
+
+    notificationsService.notifyUser(
+      userId,
+      'PENALTY_ISSUED',
+      'notifications.penaltyIssuedTitle',
+      'notifications.penaltyIssuedBody',
+      {
+        amount: decimalToNum(amount),
+        reason: reason.trim(),
+      },
+      '/my-profile'
+    ).catch((err) => console.error('[Notification] penalty issued error:', err));
+
+    return { data: penalty };
+  }
+
+  async updatePenalty(id: string, body: any): ServiceResult {
+    const { isDeducted, amount, reason, date, userId, status } = body;
+    const data: any = {};
+    if (isDeducted !== undefined) data.isDeducted = Boolean(isDeducted);
+    if (amount !== undefined) data.amount = decimalToNum(amount);
+    if (reason !== undefined) data.reason = String(reason).trim();
+    if (status !== undefined) data.status = status;
+    if (date !== undefined) {
+      const d = new Date(date);
+      d.setHours(0, 0, 0, 0);
+      data.date = d;
+    }
+    if (userId !== undefined) data.userId = userId;
+
+    const penalty = await prisma.penalty.update({
+      where: { id },
+      data,
+      include: { user: { select: { id: true, fullName: true, phone: true } } },
+    });
+
+    return { data: penalty };
+  }
+
+  async deletePenalty(id: string): ServiceResult {
+    const penalty = await prisma.penalty.findUnique({ where: { id } });
+    if (!penalty) return { error: 'Penalty not found', status: 404 };
+    await prisma.penalty.delete({ where: { id } });
+    return { data: { success: true } };
+  }
+
+  async approvePenalty(id: string, userId: string, userRole?: string): ServiceResult {
+    const penalty = await prisma.penalty.findUnique({ where: { id } });
+    if (!penalty) return { error: 'Penalty not found', status: 404 };
+    const isAdminOrOwner = userRole === 'OWNER' || userRole === 'ADMIN';
+    if (!isAdminOrOwner && penalty.userId !== userId) {
+      return { error: 'Unauthorized to approve this penalty', status: 403 };
+    }
+
+    const updated = await prisma.penalty.update({
+      where: { id },
+      data: { status: 'APPROVED' },
+      include: { user: { select: { id: true, fullName: true, phone: true } } },
+    });
+
+    notificationsService.notifyUser(
+      updated.userId,
+      'PENALTY_ISSUED',
+      'notifications.penaltyIssuedTitle',
+      'notifications.penaltyIssuedBody',
+      {
+        amount: Number(updated.amount),
+        reason: updated.reason,
+      },
+      '/my-profile'
+    ).catch((err) => console.error('[Notification] penalty approved error:', err));
+
+    return { data: updated };
+  }
+
+  async rejectPenalty(id: string, userId: string, userRole?: string): ServiceResult {
+    const penalty = await prisma.penalty.findUnique({ where: { id } });
+    if (!penalty) return { error: 'Penalty not found', status: 404 };
+    const isAdminOrOwner = userRole === 'OWNER' || userRole === 'ADMIN';
+    if (!isAdminOrOwner && penalty.userId !== userId) {
+      return { error: 'Unauthorized to reject this penalty', status: 403 };
+    }
+
+    const updated = await prisma.penalty.update({
+      where: { id },
+      data: { status: 'REJECTED' },
+      include: { user: { select: { id: true, fullName: true, phone: true } } },
+    });
+    return { data: updated };
+  }
+}

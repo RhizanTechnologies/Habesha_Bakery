@@ -1,0 +1,82 @@
+import { Router, Response } from 'express';
+import { authMiddleware, requireRole, type AuthRequest } from '../../middleware/auth.js';
+import { getPaginationParams } from '../../lib/pagination.js';
+import { PayrollService } from './payroll.service.js';
+
+export const payrollRouter = Router();
+const payrollService = new PayrollService();
+
+payrollRouter.use(authMiddleware);
+
+payrollRouter.get('/my', async (req: AuthRequest, res: Response) => {
+  const result = await payrollService.getMyPayroll(req.user?.id);
+  if (result.error) {
+    return res.status(result.status || 500).json({ error: result.error });
+  }
+  res.json(result.data);
+});
+
+payrollRouter.get('/', requireRole('OWNER'), async (req, res: Response) => {
+  const userId = req.query.userId as string | undefined;
+  const month = req.query.month as string | undefined;
+  const year = req.query.year as string | undefined;
+  const branchId = req.query.branchId as string | undefined;
+  const { page, limit } = getPaginationParams(req.query);
+  const result = await payrollService.getPayroll(userId, month, year, branchId, page, limit);
+  if (result.error) {
+    return res.status(result.status || 500).json({ error: result.error });
+  }
+  res.json(result.data);
+});
+
+payrollRouter.post('/', requireRole('OWNER'), async (req, res: Response) => {
+  const result = await payrollService.createPayroll(req.body);
+  if (result.error) {
+    return res.status(result.status || 500).json({ error: result.error });
+  }
+  res.status(201).json(result.data);
+});
+
+payrollRouter.get('/calculate/:userId', requireRole('OWNER'), async (req, res: Response) => {
+  const { userId } = req.params;
+  const { month, year } = req.query as { month: string; year: string };
+  const result = await payrollService.calculatePayroll(userId, month, year);
+  if (result.error) {
+    return res.status(result.status || 500).json({ error: result.error });
+  }
+  res.json(result.data);
+});
+
+payrollRouter.get('/:id', requireRole('OWNER'), async (req, res: Response) => {
+  const result = await payrollService.getPayrollById(req.params.id);
+  if (result.error) {
+    return res.status(result.status || 500).json({ error: result.error });
+  }
+  res.json(result.data);
+});
+
+payrollRouter.patch('/:id', requireRole('OWNER'), async (req, res: Response) => {
+  const result = await payrollService.updatePayroll(req.params.id, req.body);
+  if (result.error) {
+    return res.status(result.status || 500).json({ error: result.error });
+  }
+  res.json(result.data);
+});
+
+payrollRouter.post('/:id/approve', async (req: AuthRequest, res: Response) => {
+  if (!req.user?.id) return res.status(401).json({ error: 'Unauthorized' });
+  const result = await payrollService.approvePayroll(req.params.id, req.user.id, req.user.role);
+  if (result.error) {
+    return res.status(result.status || 500).json({ error: result.error });
+  }
+  res.json(result.data);
+});
+
+payrollRouter.post('/:id/reject', async (req: AuthRequest, res: Response) => {
+  if (!req.user?.id) return res.status(401).json({ error: 'Unauthorized' });
+  const result = await payrollService.rejectPayroll(req.params.id, req.user.id, req.user.role);
+  if (result.error) {
+    return res.status(result.status || 500).json({ error: result.error });
+  }
+  res.json(result.data);
+});

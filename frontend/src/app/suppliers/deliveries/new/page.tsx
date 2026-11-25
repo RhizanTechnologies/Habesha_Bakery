@@ -1,0 +1,1237 @@
+'use client';
+
+import React, { Suspense, useEffect, useState, useMemo } from 'react';
+import { useRouter, useSearchParams } from 'next/navigation';
+import Link from 'next/link';
+import DashboardLayout from '@/components/DashboardLayout';
+import { useAuth } from '@/context/AuthContext';
+import { useBranch } from '@/context/BranchContext';
+import { useLanguage } from '@/context/LanguageContext';
+import { api } from '@/lib/axios';
+import { toast } from 'sonner';
+import { AppDatePicker } from '@/components/AppDatePicker';
+import {
+  ArrowLeft,
+  ArrowRight,
+  Truck,
+  Plus,
+  Minus,
+  Trash2,
+  DollarSign,
+  AlertCircle,
+  Building2,
+  Calendar,
+  FileText,
+  CreditCard,
+  Percent,
+  CheckCircle2,
+  Info,
+  Search,
+  Layers,
+  ShoppingBag,
+  Pencil,
+} from 'lucide-react';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { Skeleton } from '@/components/ui/skeleton';
+import { ConfirmModal } from '@/components/ConfirmModal';
+
+interface Supplier {
+  id: string;
+  name: string;
+  phone?: string;
+  type: 'MILK' | 'INJERA' | 'GENERAL';
+  branchId: string;
+}
+
+interface ProductItem {
+  id: string;
+  name: string;
+  nameLatin?: string | null;
+  unitType: string;
+  buyPrice?: number;
+  basePrice?: number;
+  category?: { name?: string; type?: string };
+}
+
+interface SelectedDeliveryProduct {
+  quantity: string;
+  buyPrice: string;
+  sellPrice: string;
+}
+
+function NewDeliveryContent() {
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const preselectedSupplierId = searchParams.get('supplierId') || '';
+
+  const { user } = useAuth();
+  const { selectedBranchId, branches } = useBranch();
+  const { t, language, getItemName } = useLanguage();
+  const queryClient = useQueryClient();
+  const isOwner = user?.role === 'OWNER';
+  const isCashier = user?.role === 'CASHIER';
+
+  useEffect(() => {
+    if (user && user.role === 'STOCK_KEEPER') {
+      router.replace('/stock');
+    }
+  }, [user, router]);
+
+  // 4-step wizard state
+  const [currentStep, setCurrentStep] = useState<1 | 2 | 3 | 4>(1);
+
+  // Step 1: Supplier selection
+  const [supplierId, setSupplierId] = useState(preselectedSupplierId);
+  const [supplierSearch, setSupplierSearch] = useState('');
+
+  // Step 2: Product selection with quantities & rates
+  // Map of productId -> { quantity, buyPrice, sellPrice }
+  const [productMap, setProductMap] = useState<Record<string, SelectedDeliveryProduct>>({});
+  const [productSearch, setProductSearch] = useState('');
+  const [categoryFilter, setCategoryFilter] = useState('ALL');
+
+  // Step 3: Payment & Summary
+  const [deliveryDate, setDeliveryDate] = useState(() => new Date().toISOString().split('T')[0]);
+  const [paymentSource, setPaymentSource] = useState<'DAILY_CASH' | 'OWNER'>('DAILY_CASH');
+  const [amountPaidNow, setAmountPaidNow] = useState<string>('');
+  const [notes, setNotes] = useState('');
+  const [isSubmitting, setIsSubmitting] = useState(false);
+
+  // Load base data: Suppliers and Products
+  const { data: baseData, isLoading } = useQuery({
+    queryKey: ['new-delivery-base', selectedBranchId],
+    queryFn: async () => {
+      const params: any = {};
+      if (selectedBranchId) params.branchId = selectedBranchId;
+      const [supRes, prodRes] = await Promise.all([
+        api.get('/suppliers', { params }),
+        api.get('/products?minimal=true'),
+      ]);
+
+      const resellOnly = (prodRes.data || []).filter((p: any) => p.category?.type === 'RESELL');
+      const filteredProd = resellOnly.length > 0 ? resellOnly : (prodRes.data || []).filter((p: any) => p.category?.type !== 'PRODUCED');
+
+      return {
+        suppliers: (supRes.data || []) as Supplier[],
+        products: filteredProd as ProductItem[],
+      };
+    },
+  });
+
+  const suppliers = baseData?.suppliers || [];
+  const products = baseData?.products || [];
+
+  // Set default supplier
+  useEffect(() => {
+    if (suppliers.length > 0 && !supplierId) {
+      if (preselectedSupplierId && suppliers.some((s) => s.id === preselectedSupplierId)) {
+        setSupplierId(preselectedSupplierId);
+      } else {
+        setSupplierId(suppliers[0].id);
+      }
+    }
+  }, [suppliers, supplierId, preselectedSupplierId]);
+
+  // Selected supplier object
+  const selectedSupplier = suppliers.find((s) => s.id === supplierId);
+
+  // Filtered suppliers
+  const filteredSuppliers = useMemo(() => {
+    const q = supplierSearch.trim().toLowerCase();
+    if (!q) return suppliers;
+    return suppliers.filter(
+      (s) => s.name.toLowerCase().includes(q) || (s.phone && s.phone.includes(q)) || s.type.toLowerCase().includes(q)
+    );
+  }, [suppliers, supplierSearch]);
+
+  // Product categories
+  const productCategories = useMemo(() => {
+    const set = new Set<string>();
+    products.forEach((p) => {
+      if (p.category?.name) set.add(p.category.name);
+    });
+    return Array.from(set);
+  }, [products]);
+
+  // Filtered products
+  const filteredProducts = useMemo(() => {
+    return products.filter((p) => {
+      if (categoryFilter !== 'ALL' && p.category?.name !== categoryFilter) {
+        return false;
+      }
+      if (productSearch.trim()) {
+        const q = productSearch.trim().toLowerCase();
+        const n = p.name.toLowerCase();
+        const nl = (p.nameLatin || '').toLowerCase();
+        if (!n.includes(q) && !nl.includes(q)) {
+          return false;
+        }
+      }
+      return true;
+    });
+  }, [products, categoryFilter, productSearch]);
+
+  // Update product selection
+  const updateProductEntry = (productId: string, field: 'quantity' | 'buyPrice' | 'sellPrice', value: string) => {
+    const prod = products.find((p) => p.id === productId);
+    setProductMap((prev) => {
+      const existing = prev[productId] || {
+        quantity: '',
+        buyPrice: prod ? String(prod.buyPrice || '') : '',
+        sellPrice: prod ? String(prod.basePrice || '') : '',
+      };
+      return {
+        ...prev,
+        [productId]: {
+          ...existing,
+          [field]: value,
+        },
+      };
+    });
+  };
+
+  const incrementQty = (productId: string) => {
+    const curr = parseInt(productMap[productId]?.quantity || '0', 10);
+    updateProductEntry(productId, 'quantity', String(curr + 1));
+  };
+
+  const decrementQty = (productId: string) => {
+    const curr = parseInt(productMap[productId]?.quantity || '0', 10);
+    if (curr > 1) {
+      updateProductEntry(productId, 'quantity', String(curr - 1));
+    } else {
+      updateProductEntry(productId, 'quantity', '');
+    }
+  };
+
+  // Selected delivery items list
+  const selectedItemsList = useMemo(() => {
+    return Object.entries(productMap)
+      .map(([id, entry]) => {
+        const prod = products.find((p) => p.id === id);
+        const qty = parseFloat(entry.quantity) || 0;
+        const buyPrice = parseFloat(entry.buyPrice) || 0;
+        const sellPrice = parseFloat(entry.sellPrice) || 0;
+        return {
+          productId: id,
+          product: prod,
+          quantity: qty,
+          buyPrice,
+          sellPrice,
+          totalCost: qty * buyPrice,
+        };
+      })
+      .filter((it) => it.quantity > 0 && it.product);
+  }, [productMap, products]);
+
+  // Calculations
+  const totalCost = useMemo(() => {
+    return selectedItemsList.reduce((sum, item) => sum + item.totalCost, 0);
+  }, [selectedItemsList]);
+
+  const totalItemsCount = useMemo(() => {
+    return selectedItemsList.reduce((sum, item) => sum + item.quantity, 0);
+  }, [selectedItemsList]);
+
+  // Payment synchronization
+  useEffect(() => {
+    if (totalCost > 0 && amountPaidNow === '') {
+      setAmountPaidNow(totalCost.toFixed(2));
+    }
+  }, [totalCost, amountPaidNow]);
+
+  const numPaidNow = Math.min(totalCost, Math.max(0, parseFloat(amountPaidNow) || 0));
+  const remainingBalance = Math.max(0, totalCost - numPaidNow);
+
+  let paymentStatusBadge: 'PAID' | 'PARTIAL' | 'UNPAID' = 'UNPAID';
+  if (totalCost > 0) {
+    if (numPaidNow >= totalCost) {
+      paymentStatusBadge = 'PAID';
+    } else if (numPaidNow > 0) {
+      paymentStatusBadge = 'PARTIAL';
+    }
+  }
+
+  // Step 1 Validation
+  const canProceedFromStep1 = Boolean(supplierId);
+
+  // Step 2 Validation
+  const canProceedFromStep2 = selectedItemsList.length > 0 && totalCost > 0;
+
+  // Form Submission
+  const handleSubmit = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    if (!supplierId) {
+      setCurrentStep(1);
+      toast.error(t('suppliers.toastSelectSupplier'));
+      return;
+    }
+
+    if (selectedItemsList.length === 0) {
+      setCurrentStep(2);
+      toast.error(t('suppliers.toastAddProductRequired'));
+      return;
+    }
+
+    setIsSubmitting(true);
+    try {
+      await api.post('/supplier-deliveries', {
+        supplierId,
+        paymentSource: isCashier ? 'DAILY_CASH' : paymentSource,
+        isPaid: numPaidNow >= totalCost && totalCost > 0,
+        amountPaidNow: numPaidNow,
+        notes: notes.trim() || undefined,
+        items: selectedItemsList.map((i) => ({
+          productId: i.productId,
+          quantityReceived: Number(i.quantity),
+          unitBuyPrice: Number(i.buyPrice) || 0,
+          unitSellPrice: Number(i.sellPrice) || 0,
+        })),
+      });
+
+      toast.success(t('suppliers.toastDeliverySuccess'));
+
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['suppliers-page'] }),
+        queryClient.invalidateQueries({ queryKey: ['suppliers'] }),
+        queryClient.invalidateQueries({ queryKey: ['supplier-detail'] }),
+        queryClient.invalidateQueries({ queryKey: ['dashboard'] }),
+        queryClient.invalidateQueries({ queryKey: ['products'] }),
+      ]);
+
+      router.push(`/suppliers/${supplierId}`);
+    } catch (err: any) {
+      toast.error(err.response?.data?.error || t('suppliers.toastDeleteDeliveryFailed'));
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  return (
+    <DashboardLayout>
+      <div className="w-full max-w-5xl mx-auto space-y-4 xs:space-y-6 pb-28 md:pb-12 min-w-0 overflow-x-hidden">
+        {/* Header Bar */}
+        <div className="flex items-center justify-between gap-3 bg-white px-4 py-3 xs:px-5 xs:py-3.5 rounded-2xl border border-[#EDE4D5] shadow-xs">
+          <div className="flex items-center gap-2.5 sm:gap-3 min-w-0">
+            <Button
+              variant="outline"
+              size="icon"
+              onClick={() => router.push(supplierId ? `/suppliers/${supplierId}` : '/suppliers')}
+              className="border-[#EDE4D5] bg-white text-[#4A2E1B] hover:bg-[#FAF6F0] rounded-xl font-extrabold h-9 w-9 shadow-2xs cursor-pointer shrink-0"
+              title={t('common.cancel')}
+            >
+              <ArrowLeft className="w-4 h-4 text-[#E87A18]" />
+            </Button>
+            <div className="min-w-0">
+              <h1 className="text-base sm:text-lg font-black text-[#2C1B10] tracking-tight truncate flex items-center gap-2">
+                <Truck className="w-4 h-4 text-[#E87A18] shrink-0" />
+                <span>{t('suppliers.newDeliveryReceipt')}</span>
+              </h1>
+              <p className="text-[11px] text-[#8C7361] font-semibold truncate hidden xs:block">
+                {t('suppliers.stepXOfY', { current: currentStep, total: 4 })}: {currentStep === 1 ? t('suppliers.stepChooseSupplier') : currentStep === 2 ? t('suppliers.stepSelectProducts') : currentStep === 3 ? t('suppliers.stepReviewProducts') : t('suppliers.stepPaymentSettlement')}
+              </p>
+            </div>
+          </div>
+
+          <Button
+            variant="ghost"
+            onClick={() => router.push(supplierId ? `/suppliers/${supplierId}` : '/suppliers')}
+            className="text-xs font-bold text-[#8C7361] hover:text-[#4A2E1B] hover:bg-[#FAF6F0] rounded-xl h-9 px-3 shrink-0"
+          >
+            {t('common.cancel')}
+          </Button>
+        </div>
+
+        {/* Production-Style 4-Step Navigation Header */}
+        <div className="bg-white p-3.5 sm:p-4 rounded-2xl border border-[#EDE4D5] shadow-xs space-y-2.5">
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2 sm:gap-2.5 min-w-0">
+              <span className="w-6 h-6 rounded-full bg-[#E87A18] text-white flex items-center justify-center text-[11px] font-black shrink-0 shadow-xs">
+                {currentStep}
+              </span>
+              <div className="min-w-0">
+                <h2 className="text-xs sm:text-sm font-black text-[#2C1B10] truncate">
+                  {currentStep === 1 && t('suppliers.step1ChooseSupplier')}
+                  {currentStep === 2 && t('suppliers.step2SelectProducts')}
+                  {currentStep === 3 && t('suppliers.step3ReviewProducts')}
+                  {currentStep === 4 && t('suppliers.step4PaymentSettlement')}
+                </h2>
+              </div>
+            </div>
+
+            {/* Step Status Chip / Back Navigation */}
+            <div className="flex items-center gap-2 shrink-0">
+              {currentStep > 1 && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setCurrentStep((prev) => (prev > 1 ? ((prev - 1) as 1 | 2 | 3 | 4) : 1));
+                    window.scrollTo({ top: 0, behavior: "smooth" });
+                  }}
+                  className="inline-flex items-center gap-1 text-[11px] font-extrabold text-[#E87A18] hover:text-[#4A2E1B] transition-colors cursor-pointer px-2 py-1 rounded-lg bg-[#FAF6F0] border border-[#EDE4D5]"
+                >
+                  <ArrowLeft className="w-3 h-3" />
+                  <span>{t('common.back')}</span>
+                </button>
+              )}
+              {currentStep === 1 && selectedSupplier && (
+                <span className="text-[11px] font-extrabold px-2.5 py-0.5 rounded-full border bg-amber-50 text-amber-900 border-amber-200 truncate max-w-[130px]">
+                  {selectedSupplier.name}
+                </span>
+              )}
+              {currentStep === 2 && (
+                <span className="text-[11px] font-extrabold px-2.5 py-0.5 rounded-full border bg-amber-50 text-amber-900 border-amber-200">
+                  {t('suppliers.itemsUnitsCount', { items: selectedItemsList.length, units: totalItemsCount })}
+                </span>
+              )}
+              {currentStep === 3 && (
+                <span className="text-[11px] font-black px-2.5 py-0.5 rounded-full border bg-amber-50 text-amber-900 border-amber-200 font-mono">
+                  {totalCost.toFixed(2)} ETB
+                </span>
+              )}
+              {currentStep === 4 && (
+                <span className="text-[11px] font-black px-2.5 py-0.5 rounded-full border bg-emerald-50 text-emerald-900 border-emerald-200 font-mono">
+                  {t('suppliers.paidPrefix')}: {numPaidNow.toFixed(2)} ETB
+                </span>
+              )}
+            </div>
+          </div>
+
+          {/* Visual Step Progress Bar (25% -> 50% -> 75% -> 100%) */}
+          <div className="w-full bg-[#FAF6F0] h-1.5 rounded-full overflow-hidden border border-[#EDE4D5]">
+            <div
+              className={`h-full rounded-full transition-all duration-300 ${
+                currentStep === 1
+                  ? "w-1/4 bg-[#E87A18]"
+                  : currentStep === 2
+                  ? "w-2/4 bg-[#E87A18]"
+                  : currentStep === 3
+                  ? "w-3/4 bg-[#E87A18]"
+                  : "w-full bg-emerald-600"
+              }`}
+            />
+          </div>
+        </div>
+
+        {/* STEP 1: CHOOSE SUPPLIER */}
+        {currentStep === 1 && (
+          <div className="bg-white border border-[#EDE4D5] rounded-2xl p-4 sm:p-6 shadow-xs space-y-4">
+            <div className="flex items-center justify-between gap-2 border-b border-[#F4ECE1] pb-3">
+              <h3 className="font-extrabold text-base text-[#2C1B10] flex items-center gap-2">
+                <Truck className="w-4 h-4 text-[#E87A18]" />
+                <span>{t("suppliers.selectSupplier") || "Select Supplier"} ({suppliers.length})</span>
+              </h3>
+            </div>
+
+            {/* Supplier Search */}
+            <div className="relative">
+              <Search className="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-[#8C7361]" />
+              <Input
+                placeholder={t('suppliers.searchSupplierPlaceholder')}
+                value={supplierSearch}
+                onChange={(e) => setSupplierSearch(e.target.value)}
+                className="pl-10 h-11 rounded-xl bg-[#FAF6F0]/60 border-[#EDE4D5] text-sm"
+              />
+            </div>
+
+            {/* Supplier Cards Grid - Natural Flow without internal scroll */}
+            {isLoading ? (
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 py-6">
+                <Skeleton className="h-24 rounded-2xl" />
+                <Skeleton className="h-24 rounded-2xl" />
+              </div>
+            ) : filteredSuppliers.length === 0 ? (
+              <div className="text-center py-10 border border-dashed border-[#EDE4D5] rounded-2xl text-[#8C7361]">
+                <p className="font-bold text-sm">No suppliers found matching &quot;{supplierSearch}&quot;</p>
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 sm:gap-3">
+                {filteredSuppliers.map((sup) => {
+                  const isSelected = supplierId === sup.id;
+                  return (
+                    <div
+                      key={sup.id}
+                      onClick={() => setSupplierId(sup.id)}
+                      className={`p-3.5 sm:p-4 rounded-2xl border text-left cursor-pointer transition-all flex items-start justify-between gap-3 ${
+                        isSelected
+                          ? 'bg-amber-50/70 border-[#E87A18] ring-2 ring-[#E87A18]/30 shadow-xs'
+                          : 'bg-white hover:bg-[#FAF6F0]/50 border-[#EDE4D5]'
+                      }`}
+                    >
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-2">
+                          <h4 className="font-black text-sm text-[#2C1B10] truncate">{sup.name}</h4>
+                          <span className="px-2 py-0.5 rounded-full text-[10px] font-extrabold uppercase bg-[#FAF6F0] text-[#4A2E1B] border border-[#EDE4D5] shrink-0">
+                            {sup.type}
+                          </span>
+                        </div>
+                        {sup.phone && (
+                          <p className="text-xs font-mono text-[#8C7361] mt-1">{sup.phone}</p>
+                        )}
+                      </div>
+
+                      <div className="shrink-0 pt-0.5">
+                        {isSelected ? (
+                          <span className="w-6 h-6 rounded-full bg-[#E87A18] text-white flex items-center justify-center text-xs font-black shadow-xs">
+                            ✓
+                          </span>
+                        ) : (
+                          <span className="w-6 h-6 rounded-full border border-zinc-200" />
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
+            {/* Step 1 Bottom Button for Desktop */}
+            <div className="hidden md:flex justify-end pt-3 border-t border-[#F4ECE1]">
+              <Button
+                type="button"
+                size="lg"
+                disabled={!canProceedFromStep1}
+                onClick={() => {
+                  if (canProceedFromStep1) {
+                    setCurrentStep(2);
+                    window.scrollTo({ top: 0, behavior: 'smooth' });
+                  }
+                }}
+                className="h-12 px-6 rounded-xl bg-[#4A2E1B] hover:bg-[#3D2516] text-white font-extrabold text-sm flex items-center justify-center gap-2 shadow-md cursor-pointer disabled:opacity-50"
+              >
+                <span>{t('suppliers.nextSelectProducts')}</span>
+                <ArrowRight className="w-4 h-4 shrink-0" />
+              </Button>
+            </div>
+
+            {/* Mobile Sticky Bottom Bar for Step 1 */}
+            <div className="md:hidden fixed bottom-0 left-0 right-0 z-40 bg-white/95 backdrop-blur-md border-t border-[#EDE4D5] p-3 shadow-lg pb-[max(0.75rem,env(safe-area-inset-bottom))]">
+              <Button
+                type="button"
+                size="lg"
+                disabled={!canProceedFromStep1}
+                onClick={() => {
+                  if (canProceedFromStep1) {
+                    setCurrentStep(2);
+                    window.scrollTo({ top: 0, behavior: 'smooth' });
+                  }
+                }}
+                className="w-full h-12 rounded-xl bg-[#4A2E1B] hover:bg-[#3D2516] text-white font-extrabold text-sm flex items-center justify-center gap-2 shadow-md cursor-pointer disabled:opacity-50"
+              >
+                <span>{canProceedFromStep1 ? t('suppliers.nextSelectProducts') : (t('suppliers.selectSupplierToContinue') || "Select a supplier to continue")}</span>
+                <ArrowRight className="w-4 h-4 shrink-0" />
+              </Button>
+            </div>
+          </div>
+        )}
+
+        {/* STEP 2: SELECT DELIVERED PRODUCTS, QUANTITIES & PRICES */}
+        {currentStep === 2 && (
+          <div className="space-y-4">
+            <div className="bg-white border border-[#EDE4D5] rounded-2xl p-4 sm:p-6 shadow-xs space-y-4">
+              {/* Toolbar */}
+              <div className="space-y-3 border-b border-[#F4ECE1] pb-4">
+                <div className="flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-2 text-xs font-bold text-[#4A2E1B]">
+                    <Layers className="w-4 h-4 text-[#E87A18]" /> {t('products.filterByCategory')}:
+                  </div>
+                  <span className="text-xs font-extrabold text-[#E87A18] font-mono">
+                    {t('suppliers.selectedUnitsSummary', { items: selectedItemsList.length, units: totalItemsCount })}
+                  </span>
+                </div>
+
+                {/* Horizontal Category Carousel with smooth scroll and mobile edge gradients */}
+                <div className="relative w-full overflow-hidden">
+                  <div className="pointer-events-none absolute left-0 top-0 bottom-0 w-6 bg-gradient-to-r from-white to-transparent z-10 sm:hidden" />
+                  <div className="pointer-events-none absolute right-0 top-0 bottom-0 w-6 bg-gradient-to-l from-white to-transparent z-10 sm:hidden" />
+                  <div
+                    className="flex items-center gap-1.5 xs:gap-2 overflow-x-auto no-scrollbar scroll-smooth [scroll-padding:0_1.5rem] pb-1"
+                    style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}
+                  >
+                    <button
+                      type="button"
+                      onClick={() => setCategoryFilter('ALL')}
+                      className={`px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all shrink-0 cursor-pointer ${
+                        categoryFilter === 'ALL'
+                          ? 'bg-[#4A2E1B] text-white shadow-2xs'
+                          : 'bg-[#FAF6F0] text-[#4A2E1B] hover:bg-[#EDE4D5]'
+                      }`}
+                    >
+                      {t('suppliers.allResellProductsCount', { count: products.length })}
+                    </button>
+                    {productCategories.map((cat) => {
+                      const count = products.filter((p) => p.category?.name === cat).length;
+                      const isSelected = categoryFilter === cat;
+                      return (
+                        <button
+                          key={cat}
+                          type="button"
+                          onClick={() => setCategoryFilter(cat)}
+                          className={`px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all shrink-0 flex items-center gap-1.5 cursor-pointer ${
+                            isSelected
+                              ? 'bg-[#4A2E1B] text-white shadow-2xs'
+                              : 'bg-[#FAF6F0] text-[#4A2E1B] hover:bg-[#EDE4D5]'
+                          }`}
+                        >
+                          <span>{cat}</span>
+                          <span className={`text-[10px] px-1 rounded-full font-mono ${
+                            isSelected ? 'bg-white/20 text-white' : 'bg-white text-[#8C7361]'
+                          }`}>
+                            {count}
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                <div className="relative">
+                  <Search className="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-[#8C7361]" />
+                  <Input
+                    placeholder={t('products.searchPlaceholder')}
+                    value={productSearch}
+                    onChange={(e) => setProductSearch(e.target.value)}
+                    className="pl-10 h-10 rounded-xl bg-[#FAF6F0]/50 border-[#EDE4D5] text-xs"
+                  />
+                </div>
+              </div>
+
+              {/* Products Cards Grid - Natural Flow without internal scroll */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5 sm:gap-3.5">
+                {filteredProducts.map((prod) => {
+                  const entry = productMap[prod.id] || {
+                    quantity: '',
+                    buyPrice: String(prod.buyPrice || ''),
+                    sellPrice: String(prod.basePrice || ''),
+                  };
+                  const qty = parseFloat(entry.quantity) || 0;
+                  const isSelected = qty > 0;
+                  const buyRate = parseFloat(entry.buyPrice) || 0;
+                  const subTotal = qty * buyRate;
+
+                  return (
+                    <div
+                      key={prod.id}
+                      className={`p-3.5 rounded-2xl border transition-all flex flex-col justify-between ${
+                        isSelected
+                          ? 'bg-amber-50/60 border-[#E87A18] ring-2 ring-[#E87A18]/20 shadow-xs'
+                          : 'bg-white hover:bg-[#FAF6F0]/40 border-[#EDE4D5]'
+                      }`}
+                    >
+                      <div>
+                        <div className="flex items-start justify-between gap-1 mb-1">
+                          <span className="px-2 py-0.5 rounded-md text-[10px] font-bold bg-[#FAF6F0] text-[#4A2E1B] border border-[#EDE4D5] truncate max-w-[130px]">
+                            {prod.category?.name || 'Resell Product'}
+                          </span>
+                          <span className="px-2 py-0.5 rounded-md text-[10px] font-bold bg-white text-[#8C7361] border border-[#EDE4D5]">
+                            {prod.unitType}
+                          </span>
+                        </div>
+
+                        <h4 className="font-extrabold text-sm text-[#2C1B10] leading-tight">
+                          {getItemName(prod)}
+                        </h4>
+                        {prod.nameLatin && (
+                          <p className="text-[11px] font-mono text-[#8C7361] mt-0.5">{prod.nameLatin}</p>
+                        )}
+                      </div>
+
+                      {/* Quantity & Price Inputs with Touch-friendly Stepper */}
+                      <div className="mt-3 pt-2.5 border-t border-[#F4ECE1] space-y-2">
+                        <div>
+                          <label className="text-[10px] font-bold text-[#8C7361] uppercase block mb-1">
+                            {t('suppliers.qtyReceived')}
+                          </label>
+                          <div className="flex items-center gap-1.5">
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="outline"
+                              onClick={() => decrementQty(prod.id)}
+                              disabled={qty <= 0}
+                              className="h-9 w-9 p-0 rounded-xl border-[#EDE4D5] hover:bg-[#FAF6F0] shrink-0 touch-manipulation cursor-pointer"
+                            >
+                              <Minus className="w-3.5 h-3.5" />
+                            </Button>
+
+                            <Input
+                              type="number"
+                              inputMode="decimal"
+                              min="0"
+                              step="any"
+                              placeholder="0"
+                              value={entry.quantity}
+                              onChange={(e) => updateProductEntry(prod.id, 'quantity', e.target.value)}
+                              onFocus={(e) => e.target.select()}
+                              className="h-9 text-center text-sm font-black rounded-xl border-[#EDE4D5] bg-white font-mono flex-1"
+                            />
+
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="outline"
+                              onClick={() => incrementQty(prod.id)}
+                              className="h-9 w-9 p-0 rounded-xl border-[#EDE4D5] hover:bg-[#FAF6F0] shrink-0 touch-manipulation cursor-pointer"
+                            >
+                              <Plus className="w-3.5 h-3.5" />
+                            </Button>
+                          </div>
+                        </div>
+
+                        <div className="grid grid-cols-2 gap-2">
+                          <div>
+                            <label className="text-[10px] font-bold text-[#8C7361] uppercase block mb-0.5">
+                              {t('suppliers.buyRate')} (ETB)
+                            </label>
+                            <Input
+                              type="number"
+                              inputMode="decimal"
+                              min="0"
+                              step="any"
+                              placeholder="0.00"
+                              value={entry.buyPrice}
+                              onChange={(e) => updateProductEntry(prod.id, 'buyPrice', e.target.value)}
+                              className="h-9 text-xs font-mono rounded-xl border-[#EDE4D5] bg-white"
+                            />
+                          </div>
+                          <div>
+                            <label className="text-[10px] font-bold text-[#8C7361] uppercase block mb-0.5">
+                              {t('suppliers.sellRate')} (ETB)
+                            </label>
+                            <Input
+                              type="number"
+                              inputMode="decimal"
+                              min="0"
+                              step="any"
+                              placeholder="0.00"
+                              value={entry.sellPrice}
+                              onChange={(e) => updateProductEntry(prod.id, 'sellPrice', e.target.value)}
+                              className="h-9 text-xs font-mono rounded-xl border-[#EDE4D5] bg-white"
+                            />
+                          </div>
+                        </div>
+
+                        {isSelected && (
+                          <div className="text-right text-[11px] font-mono font-bold text-[#2C1B10] pt-1">
+                            {t('common.total')}: <strong className="text-[#E87A18] font-black">{subTotal.toFixed(2)} ETB</strong>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Step 2 Bottom Navigation (Desktop md+) */}
+            <div className="hidden md:flex items-center justify-between gap-3 pt-2">
+              <Button
+                type="button"
+                variant="outline"
+                size="lg"
+                onClick={() => {
+                  setCurrentStep(1);
+                  window.scrollTo({ top: 0, behavior: 'smooth' });
+                }}
+                className="h-12 px-5 rounded-xl border-[#EDE4D5] text-[#4A2E1B] hover:bg-[#FAF6F0] font-bold text-xs flex items-center gap-1.5 cursor-pointer"
+              >
+                <ArrowLeft className="w-4 h-4" />
+                <span>{t('suppliers.backToSupplier')}</span>
+              </Button>
+
+              <div className="flex items-center gap-3">
+                <div className="text-right">
+                  <span className="text-[10px] text-[#8C7361] font-bold uppercase block">{t('suppliers.totalCost')}</span>
+                  <span className="text-base font-black text-[#E87A18] font-mono">{totalCost.toFixed(2)} ETB</span>
+                </div>
+
+                <Button
+                  type="button"
+                  size="lg"
+                  disabled={!canProceedFromStep2}
+                  onClick={() => {
+                    if (canProceedFromStep2) {
+                      setCurrentStep(3);
+                      window.scrollTo({ top: 0, behavior: 'smooth' });
+                    }
+                  }}
+                  className="h-12 px-6 rounded-xl bg-[#4A2E1B] hover:bg-[#3D2516] text-white font-extrabold text-sm flex items-center gap-2 shadow-md cursor-pointer disabled:opacity-50"
+                >
+                  <span>{t('suppliers.nextReviewProducts')} ({selectedItemsList.length})</span>
+                  <ArrowRight className="w-4 h-4 shrink-0" />
+                </Button>
+              </div>
+            </div>
+
+            {/* Mobile Sticky Bottom Action Bar (< md) */}
+            <div className="md:hidden fixed bottom-0 left-0 right-0 z-40 bg-white/95 backdrop-blur-md border-t border-[#EDE4D5] p-3 shadow-lg pb-[max(0.75rem,env(safe-area-inset-bottom))]">
+              <div className="flex items-center gap-2 w-full">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="lg"
+                  onClick={() => {
+                    setCurrentStep(1);
+                    window.scrollTo({ top: 0, behavior: 'smooth' });
+                  }}
+                  className="h-12 px-3.5 rounded-xl border-[#EDE4D5] text-[#4A2E1B] hover:bg-[#FAF6F0] font-extrabold text-xs shrink-0 cursor-pointer flex items-center gap-1"
+                >
+                  <ArrowLeft className="w-4 h-4" />
+                  <span>{t("common.back")}</span>
+                </Button>
+                <Button
+                  type="button"
+                  size="lg"
+                  disabled={!canProceedFromStep2}
+                  onClick={() => {
+                    if (canProceedFromStep2) {
+                      setCurrentStep(3);
+                      window.scrollTo({ top: 0, behavior: 'smooth' });
+                    }
+                  }}
+                  className="flex-1 h-12 rounded-xl bg-[#4A2E1B] hover:bg-[#3D2516] text-white font-black text-sm flex items-center justify-center gap-2 shadow-md cursor-pointer disabled:opacity-50"
+                >
+                  <span className="truncate">
+                    {canProceedFromStep2
+                      ? `${t('suppliers.nextReviewProducts')} (${selectedItemsList.length} • ${totalCost.toFixed(0)} ETB)`
+                      : t('suppliers.selectProductsPrompt')}
+                  </span>
+                  <ArrowRight className="w-4 h-4 shrink-0" />
+                </Button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* STEP 3: REVIEW DELIVERED PRODUCTS */}
+        {currentStep === 3 && (
+          <div className="space-y-4">
+            {/* Supplier Card */}
+            <div className="bg-white border border-[#EDE4D5] rounded-2xl p-4 sm:p-5 shadow-xs flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+              <div className="flex items-center gap-3 min-w-0">
+                <div className="w-11 h-11 rounded-2xl bg-amber-100/70 border border-amber-300 text-amber-900 flex items-center justify-center shrink-0">
+                  <Truck className="w-5 h-5" />
+                </div>
+                <div className="min-w-0">
+                  <span className="text-[10px] uppercase font-bold text-[#8C7361] tracking-wider block">{t('suppliers.supplierLabel')}</span>
+                  <h3 className="font-black text-sm sm:text-base text-[#2C1B10] truncate">{selectedSupplier?.name}</h3>
+                  <p className="text-xs font-mono text-[#8C7361] truncate">
+                    {selectedSupplier?.phone || 'No phone'} • Type: <strong className="uppercase">{selectedSupplier?.type}</strong>
+                  </p>
+                </div>
+              </div>
+
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => setCurrentStep(1)}
+                className="h-8 text-xs font-bold border-[#EDE4D5] hover:bg-[#FAF6F0] rounded-xl self-end sm:self-center cursor-pointer"
+              >
+                {t('suppliers.changeSupplier')}
+              </Button>
+            </div>
+
+            {/* Products Table Summary */}
+            <div className="bg-white border border-[#EDE4D5] rounded-2xl p-4 sm:p-6 shadow-xs space-y-4">
+              <div className="flex items-center justify-between border-b border-[#F4ECE1] pb-3.5">
+                <div className="flex items-center gap-2.5">
+                  <div className="w-8 h-8 rounded-xl bg-amber-50 border border-amber-200 flex items-center justify-center text-[#E87A18]">
+                    <ShoppingBag className="w-4 h-4" />
+                  </div>
+                  <div>
+                    <h3 className="font-black text-sm sm:text-base text-[#2C1B10]">
+                      {t('suppliers.deliveredProducts')}
+                    </h3>
+                    <p className="text-[11px] text-[#8C7361] font-semibold">
+                      {t('suppliers.distinctItemsCount', { items: selectedItemsList.length, units: totalItemsCount })}
+                    </p>
+                  </div>
+                </div>
+
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setCurrentStep(2)}
+                  className="h-8 px-3 text-xs font-bold border-[#EDE4D5] hover:bg-[#FAF6F0] rounded-xl text-[#4A2E1B] flex items-center gap-1.5 cursor-pointer"
+                >
+                  <Pencil className="w-3.5 h-3.5 text-[#E87A18]" />
+                  <span>{t('suppliers.editProducts')}</span>
+                </Button>
+              </div>
+
+              {/* Mobile Card List View (< sm) */}
+              <div className="sm:hidden space-y-2.5">
+                {selectedItemsList.map((it) => (
+                  <div
+                    key={it.productId}
+                    className="p-3 rounded-xl bg-[#FAF6F0]/70 border border-[#EDE4D5] flex items-center justify-between gap-3"
+                  >
+                    <div className="min-w-0 flex-1">
+                      <span className="font-black text-sm text-[#2C1B10] block truncate">
+                        {getItemName(it.product)}
+                      </span>
+                      <div className="flex items-center gap-1.5 mt-0.5 text-[11px] text-[#8C7361]">
+                        <span>Buy: {it.buyPrice.toFixed(2)} ETB</span>
+                        <span>•</span>
+                        <span>Sell: {it.sellPrice.toFixed(2)} ETB</span>
+                      </div>
+                    </div>
+                    <div className="text-right shrink-0">
+                      <span className="inline-block px-2 py-0.5 rounded-lg bg-white text-[#2C1B10] font-mono font-black text-xs border border-[#EDE4D5] mb-0.5">
+                        {it.quantity} {it.product?.unitType}
+                      </span>
+                      <div className="font-mono font-black text-xs text-[#E87A18]">
+                        {it.totalCost.toFixed(2)} ETB
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              {/* Desktop Items Table (sm+) */}
+              <div className="hidden sm:block overflow-x-auto rounded-2xl border border-[#F4ECE1]">
+                <table className="w-full text-left text-xs">
+                  <thead>
+                    <tr className="bg-[#FAF6F0]/70 text-[#8C7361] border-b border-[#F4ECE1]">
+                      <th className="py-2.5 px-3 font-extrabold uppercase text-[10px]">{t('common.product')}</th>
+                      <th className="py-2.5 px-3 text-center font-extrabold uppercase text-[10px]">{t('suppliers.qtyReceived')}</th>
+                      <th className="py-2.5 px-3 text-right font-extrabold uppercase text-[10px]">{t('suppliers.buyRate')}</th>
+                      <th className="py-2.5 px-3 text-right font-extrabold uppercase text-[10px]">{t('suppliers.sellRate')}</th>
+                      <th className="py-2.5 px-3 text-right font-extrabold uppercase text-[10px]">{t('suppliers.subtotalCost')}</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-[#F4ECE1]">
+                    {selectedItemsList.map((it) => (
+                      <tr key={it.productId} className="hover:bg-[#FAF6F0]/40 transition-colors">
+                        <td className="py-3 px-3">
+                          <span className="font-black text-sm text-[#2C1B10] block">{getItemName(it.product)}</span>
+                          <span className="text-[10px] text-[#8C7361] font-medium">{it.product?.category?.name || 'Resell'}</span>
+                        </td>
+                        <td className="py-3 px-3 text-center">
+                          <span className="inline-block px-2.5 py-1 rounded-lg bg-[#FAF6F0] text-[#2C1B10] font-mono font-black text-xs border border-[#EDE4D5]">
+                            {it.quantity} {it.product?.unitType}
+                          </span>
+                        </td>
+                        <td className="py-3 px-3 text-right font-mono text-xs text-[#8C7361] font-bold">
+                          {it.buyPrice.toFixed(2)} ETB
+                        </td>
+                        <td className="py-3 px-3 text-right font-mono text-xs text-[#8C7361] font-bold">
+                          {it.sellPrice.toFixed(2)} ETB
+                        </td>
+                        <td className="py-3 px-3 text-right font-mono font-black text-sm text-[#E87A18]">
+                          {it.totalCost.toFixed(2)} ETB
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+
+              {/* Total Cost Display */}
+              <div className="pt-3 border-t border-[#EDE4D5] flex items-center justify-between bg-gradient-to-br from-[#FAF6F0] to-[#F5ECE1] p-3.5 sm:p-4 rounded-2xl">
+                <div>
+                  <span className="text-xs uppercase font-extrabold text-[#4A2E1B] block">{t('suppliers.totalDeliveryValue')}</span>
+                  <span className="text-[11px] text-[#8C7361]">{totalItemsCount} {t("suppliers.totalUnitsAddedToInventory")}</span>
+                </div>
+                <div className="text-right">
+                  <span className="text-xl sm:text-2xl font-black text-[#E87A18] font-mono">
+                    {totalCost.toFixed(2)} ETB
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            {/* Step 3 Bottom Navigation (Desktop md+) */}
+            <div className="hidden md:flex items-center justify-between gap-3 pt-3">
+              <Button
+                type="button"
+                variant="outline"
+                size="lg"
+                onClick={() => {
+                  setCurrentStep(2);
+                  window.scrollTo({ top: 0, behavior: 'smooth' });
+                }}
+                className="h-12 px-6 rounded-xl border-[#EDE4D5] text-[#4A2E1B] hover:bg-[#FAF6F0] font-extrabold text-xs flex items-center justify-center gap-1.5 cursor-pointer"
+              >
+                <ArrowLeft className="w-4 h-4 shrink-0" />
+                <span>{t('suppliers.backToProducts')}</span>
+              </Button>
+
+              <Button
+                type="button"
+                size="lg"
+                disabled={selectedItemsList.length === 0 || totalCost <= 0}
+                onClick={() => {
+                  setCurrentStep(4);
+                  window.scrollTo({ top: 0, behavior: 'smooth' });
+                }}
+                className="h-12 px-8 rounded-xl bg-[#4A2E1B] hover:bg-[#3D2516] text-white font-black text-sm flex items-center justify-center gap-2 shadow-md hover:shadow-lg transition-all cursor-pointer disabled:opacity-50 shrink-0"
+              >
+                <span>{t('suppliers.proceedToPaymentSettlement')}</span>
+                <ArrowRight className="w-4 h-4 shrink-0" />
+              </Button>
+            </div>
+
+            {/* Mobile Sticky Bottom Action Bar (< md) */}
+            <div className="md:hidden fixed bottom-0 left-0 right-0 z-40 bg-white/95 backdrop-blur-md border-t border-[#EDE4D5] p-3 shadow-lg pb-[max(0.75rem,env(safe-area-inset-bottom))]">
+              <div className="flex items-center gap-2 w-full">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="lg"
+                  onClick={() => {
+                    setCurrentStep(2);
+                    window.scrollTo({ top: 0, behavior: 'smooth' });
+                  }}
+                  className="h-12 px-3.5 rounded-xl border-[#EDE4D5] text-[#4A2E1B] hover:bg-[#FAF6F0] font-extrabold text-xs shrink-0 cursor-pointer flex items-center gap-1"
+                >
+                  <ArrowLeft className="w-4 h-4" />
+                  <span>{t('common.back')}</span>
+                </Button>
+                <Button
+                  type="button"
+                  size="lg"
+                  disabled={selectedItemsList.length === 0 || totalCost <= 0}
+                  onClick={() => {
+                    setCurrentStep(4);
+                    window.scrollTo({ top: 0, behavior: 'smooth' });
+                  }}
+                  className="flex-1 h-12 rounded-xl bg-[#4A2E1B] hover:bg-[#3D2516] text-white font-black text-sm flex items-center justify-center gap-2 shadow-md cursor-pointer disabled:opacity-50"
+                >
+                  <span className="truncate">{t('suppliers.proceedToPayment')}</span>
+                  <ArrowRight className="w-4 h-4 shrink-0" />
+                </Button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* STEP 4: PAYMENT SETTLEMENT CONFIGURATION & SUBMISSION */}
+        {currentStep === 4 && (
+          <form onSubmit={handleSubmit} className="space-y-4">
+            {/* Quick Delivery Summary Banner */}
+            <div className="bg-gradient-to-r from-amber-500/10 via-[#FAF6F0] to-[#FAF6F0] border border-amber-300/80 rounded-2xl p-4 sm:p-5 shadow-xs flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+              <div>
+                <span className="text-[10px] uppercase font-black text-[#8C7361] tracking-wider block">
+                  {t('suppliers.deliveryFor', { name: selectedSupplier?.name || '' })}
+                </span>
+                <p className="text-xs text-[#4A2E1B] font-bold">
+                  {t('suppliers.productsUnitsCount', { products: selectedItemsList.length, units: totalItemsCount })}
+                </p>
+              </div>
+              <div className="text-left sm:text-right">
+                <span className="text-[10px] text-[#8C7361] font-bold uppercase block">{t('suppliers.totalPayable')}</span>
+                <span className="text-xl sm:text-2xl font-black text-[#E87A18] font-mono">
+                  {totalCost.toFixed(2)} ETB
+                </span>
+              </div>
+            </div>
+
+            {/* Payment Details & Settlement Mode */}
+            <div className="bg-white border border-[#EDE4D5] rounded-2xl p-4 sm:p-5 shadow-xs space-y-4">
+              <h3 className="font-extrabold text-base text-[#2C1B10] flex items-center gap-2">
+                <CreditCard className="w-4 h-4 text-[#E87A18]" />
+                <span>{t('suppliers.paymentSettlementConfig')}</span>
+              </h3>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 sm:gap-4">
+                <div className={isCashier ? "sm:col-span-2" : ""}>
+                  <label className="text-xs font-extrabold text-[#2C1B10] block mb-1.5 uppercase">
+                    {t('suppliers.deliveryDateLabel')} *
+                  </label>
+                  <AppDatePicker
+                    value={deliveryDate}
+                    onChange={(val) => setDeliveryDate(val)}
+                    className="h-11 rounded-xl bg-[#FAF6F0]/40 border-[#EDE4D5]"
+                  />
+                </div>
+
+                {!isCashier && (
+                  <div>
+                    <label className="text-xs font-extrabold text-[#2C1B10] block mb-1.5 uppercase">
+                      {t('suppliers.paymentSourceLabel')} *
+                    </label>
+                    <div className="grid grid-cols-2 gap-2 h-11">
+                      <button
+                        type="button"
+                        onClick={() => setPaymentSource('DAILY_CASH')}
+                        className={`rounded-xl text-xs font-bold transition-all border cursor-pointer ${
+                          paymentSource === 'DAILY_CASH'
+                            ? 'bg-[#4A2E1B] text-white border-[#4A2E1B] shadow-xs'
+                            : 'bg-[#FAF6F0]/50 text-[#8C7361] border-[#EDE4D5] hover:bg-[#FAF6F0]'
+                        }`}
+                      >
+                        💵 {t('suppliers.sourceDailyCash')}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setPaymentSource('OWNER')}
+                        className={`rounded-xl text-xs font-bold transition-all border cursor-pointer ${
+                          paymentSource === 'OWNER'
+                            ? 'bg-[#4A2E1B] text-white border-[#4A2E1B] shadow-xs'
+                            : 'bg-[#FAF6F0]/50 text-[#8C7361] border-[#EDE4D5] hover:bg-[#FAF6F0]'
+                        }`}
+                      >
+                        🏦 {t('suppliers.sourceOwnerDirect')}
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                <div className="sm:col-span-2">
+                  <div className="flex items-center justify-between mb-1.5">
+                    <label className="text-xs font-extrabold text-[#2C1B10] uppercase">
+                      {t('suppliers.paidAmountNowLabel')} *
+                    </label>
+                    <div className="flex items-center gap-1.5">
+                      <button
+                        type="button"
+                        onClick={() => setAmountPaidNow(totalCost > 0 ? totalCost.toFixed(2) : '0')}
+                        className="text-[11px] font-bold px-2.5 py-0.5 rounded-lg bg-emerald-50 text-emerald-800 border border-emerald-200 hover:bg-emerald-100 transition-colors cursor-pointer"
+                      >
+                        {t('suppliers.payFullAmount', { amount: totalCost.toFixed(2) })}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setAmountPaidNow('0')}
+                        className="text-[11px] font-bold px-2.5 py-0.5 rounded-lg bg-rose-50 text-rose-800 border border-rose-200 hover:bg-rose-100 transition-colors cursor-pointer"
+                      >
+                        {t('suppliers.fullCreditBtn')}
+                      </button>
+                    </div>
+                  </div>
+                  <Input
+                    type="number"
+                    step="any"
+                    min="0"
+                    max={totalCost}
+                    placeholder="0.00"
+                    value={amountPaidNow}
+                    onChange={(e) => setAmountPaidNow(e.target.value)}
+                    className="h-11 rounded-xl bg-[#FAF6F0]/40 border-[#EDE4D5] font-mono text-base font-bold"
+                  />
+                  <p className="text-[11px] text-[#8C7361] mt-1">
+                    {t('suppliers.paidAmountExplainer')}
+                  </p>
+                </div>
+
+                {/* Settlement Summary Pill */}
+                <div className="sm:col-span-2 p-3.5 sm:p-4 rounded-2xl bg-[#FAF6F0] border border-[#EDE4D5] flex items-center justify-between text-xs">
+                  <div>
+                    <span className="text-[#8C7361] font-bold block uppercase text-[10px]">{t('suppliers.paidNow')}</span>
+                    <strong className="text-emerald-700 font-extrabold font-mono text-base sm:text-lg">
+                      {numPaidNow.toFixed(2)} ETB
+                    </strong>
+                  </div>
+                  <div className="text-right">
+                    <span className="text-[#8C7361] font-bold block uppercase text-[10px]">{t('suppliers.supplierCreditBalance')}</span>
+                    <strong className={`font-mono text-base sm:text-lg ${remainingBalance > 0 ? 'text-rose-700 font-black' : 'text-zinc-500 font-semibold'}`}>
+                      {remainingBalance.toFixed(2)} ETB
+                    </strong>
+                  </div>
+                </div>
+
+                <div className="sm:col-span-2">
+                  <label className="text-xs font-extrabold text-[#2C1B10] block mb-1.5 uppercase">
+                    {t('suppliers.deliveryNotesOptionalPlaceholder')}
+                  </label>
+                  <Input
+                    placeholder={t('suppliers.deliveryNotesPlaceholder')}
+                    value={notes}
+                    onChange={(e) => setNotes(e.target.value)}
+                    className="h-11 rounded-xl bg-[#FAF6F0]/40 border-[#EDE4D5]"
+                  />
+                </div>
+              </div>
+            </div>
+
+            {/* Step 4 Bottom Action Buttons (Desktop md+) */}
+            <div className="hidden md:flex items-center justify-between gap-3 pt-3">
+              <Button
+                type="button"
+                variant="outline"
+                size="lg"
+                disabled={isSubmitting}
+                onClick={() => {
+                  setCurrentStep(3);
+                  window.scrollTo({ top: 0, behavior: 'smooth' });
+                }}
+                className="h-12 px-6 rounded-xl border-[#EDE4D5] text-[#4A2E1B] hover:bg-[#FAF6F0] font-extrabold text-xs flex items-center justify-center gap-1.5 cursor-pointer"
+              >
+                <ArrowLeft className="w-4 h-4 shrink-0" />
+                <span>{t('suppliers.backToReview')}</span>
+              </Button>
+
+              <Button
+                type="submit"
+                size="lg"
+                disabled={isSubmitting || totalCost <= 0}
+                className="h-12 px-8 rounded-xl bg-emerald-700 hover:bg-emerald-800 text-white font-black text-sm flex items-center justify-center gap-2 shadow-md hover:shadow-lg transition-all cursor-pointer disabled:opacity-50 shrink-0"
+              >
+                <CheckCircle2 className="w-4 h-4 shrink-0" />
+                <span>
+                  {isSubmitting
+                    ? t('suppliers.recordingDelivery')
+                    : t('suppliers.confirmAndRecordDelivery', { amount: totalCost.toFixed(2) })}
+                </span>
+              </Button>
+            </div>
+
+            {/* Mobile Sticky Bottom Action Bar (< md) */}
+            <div className="md:hidden fixed bottom-0 left-0 right-0 z-40 bg-white/95 backdrop-blur-md border-t border-[#EDE4D5] p-3 shadow-lg pb-[max(0.75rem,env(safe-area-inset-bottom))]">
+              <div className="flex items-center gap-2 w-full">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="lg"
+                  disabled={isSubmitting}
+                  onClick={() => {
+                    setCurrentStep(3);
+                    window.scrollTo({ top: 0, behavior: 'smooth' });
+                  }}
+                  className="h-12 px-3.5 rounded-xl border-[#EDE4D5] text-[#4A2E1B] hover:bg-[#FAF6F0] font-extrabold text-xs shrink-0 cursor-pointer flex items-center gap-1"
+                >
+                  <ArrowLeft className="w-4 h-4" />
+                  <span>{t('common.back')}</span>
+                </Button>
+
+                <Button
+                  type="submit"
+                  size="lg"
+                  disabled={isSubmitting || totalCost <= 0}
+                  className="flex-1 h-12 rounded-xl bg-emerald-700 hover:bg-emerald-800 text-white font-black text-sm flex items-center justify-center gap-2 shadow-md cursor-pointer disabled:opacity-50"
+                >
+                  <CheckCircle2 className="w-4 h-4 shrink-0" />
+                  <span className="truncate">
+                    {isSubmitting
+                      ? t('suppliers.recordingDelivery')
+                      : t('suppliers.confirmDeliveryShort', { amount: totalCost.toFixed(0) })}
+                  </span>
+                </Button>
+              </div>
+            </div>
+          </form>
+        )}
+      </div>
+    </DashboardLayout>
+  );
+}
+
+export default function NewDeliveryPage() {
+  const { t } = useLanguage();
+  return (
+    <Suspense
+      fallback={
+        <div className="min-h-screen bg-[#FAF7EE] flex items-center justify-center">
+          <p className="text-[#4A2E1B] font-bold text-sm">{t('suppliers.loadingDeliveryForm')}</p>
+        </div>
+      }
+    >
+      <NewDeliveryContent />
+    </Suspense>
+  );
+}

@@ -1,0 +1,140 @@
+import { Router, Response } from 'express';
+import { authMiddleware, requireRole, type AuthRequest } from '../../middleware/auth.js';
+import { ProductionBatchesService } from './production-batches.service.js';
+
+export const productionBatchesRouter = Router();
+const productionBatchesService = new ProductionBatchesService();
+
+productionBatchesRouter.use(authMiddleware);
+
+productionBatchesRouter.get('/', async (req: AuthRequest, res: Response) => {
+  const branchId = (req.query.branchId as string) || req.user?.branchId;
+  const date = req.query.date as string;
+  const status = req.query.status as string | undefined;
+  const shift = req.query.shift as string | undefined;
+  const role = req.query.role as string | undefined;
+  const userId = req.query.userId as string | undefined;
+  const seen = (req.query.seen as string) || (req.query.seenFilter as string) || undefined;
+  const page = req.query.page ? parseInt(req.query.page as string, 10) : undefined;
+  const limit = req.query.limit ? parseInt(req.query.limit as string, 10) : undefined;
+  const result = await productionBatchesService.getProductionBatches(
+    branchId,
+    date,
+    status,
+    shift,
+    role,
+    userId,
+    seen,
+    req.user?.role,
+    req.user?.id,
+    page,
+    limit
+  );
+  if (result.error) {
+    return res.status(result.status || 500).json({ error: result.error });
+  }
+  res.json(result.data);
+});
+
+productionBatchesRouter.get('/daily-product-history/all', requireRole('OWNER', 'ADMIN'), async (req: AuthRequest, res: Response) => {
+  const branchId = (req.query.branchId as string) || req.user?.branchId;
+  const startDate = req.query.startDate as string | undefined;
+  const endDate = req.query.endDate as string | undefined;
+  const type = req.query.type as string | undefined;
+  const supplierId = req.query.supplierId as string | undefined;
+  const productId = req.query.productId as string | undefined;
+  const search = req.query.search as string | undefined;
+  const page = req.query.page ? parseInt(req.query.page as string, 10) : undefined;
+  const limit = req.query.limit ? parseInt(req.query.limit as string, 10) : undefined;
+
+  const result = await productionBatchesService.getDailyProductHistory({
+    branchId,
+    startDate,
+    endDate,
+    type,
+    supplierId,
+    productId,
+    search,
+    page,
+    limit,
+  });
+
+  if (result.error) {
+    return res.status(result.status || 500).json({ error: result.error });
+  }
+  res.json(result.data);
+});
+
+productionBatchesRouter.patch('/items/:itemId/return', async (req: AuthRequest, res: Response) => {
+  const { returnedQuantity } = req.body;
+  const result = await productionBatchesService.updateProductionItemReturn(req.params.itemId, returnedQuantity, req.user);
+  if (result.error) {
+    return res.status(result.status || 500).json({ error: result.error });
+  }
+  res.json(result.data);
+});
+
+productionBatchesRouter.get('/:id', async (req: AuthRequest, res: Response) => {
+  const result = await productionBatchesService.getProductionBatchById(req.params.id, req.user);
+  if (result.error) {
+    return res.status(result.status || 500).json({ error: result.error });
+  }
+  res.json(result.data);
+});
+
+productionBatchesRouter.post('/:id/seen', requireRole('OWNER'), async (req: AuthRequest, res: Response) => {
+  const result = await productionBatchesService.markBatchSeen(req.params.id, req.user!);
+  if (result.error) {
+    return res.status(result.status || 500).json({ error: result.error });
+  }
+  res.json(result.data);
+});
+
+productionBatchesRouter.post('/:id/flag', requireRole('OWNER'), async (req: AuthRequest, res: Response) => {
+  const { isFlagged, reason } = req.body;
+  const result = await productionBatchesService.toggleBatchFlag(req.params.id, isFlagged !== false, reason, req.user);
+  if (result.error) {
+    return res.status(result.status || 500).json({ error: result.error });
+  }
+  res.json(result.data);
+});
+
+productionBatchesRouter.post('/', requireRole('OWNER', 'ADMIN', 'BAKER', 'CAKE_WORKER', 'SAMBUSA_WORKER'), async (req: AuthRequest, res: Response) => {
+  const result = await productionBatchesService.createProductionBatch(req.body, req.user!.id, req.user?.branchId);
+  if (result.error) {
+    return res.status(result.status || 500).json({ error: result.error });
+  }
+  res.status(201).json(result.data);
+});
+
+productionBatchesRouter.post('/:id/approve', requireRole('OWNER', 'ADMIN'), async (req: AuthRequest, res: Response) => {
+  const result = await productionBatchesService.approveProductionBatch(req.params.id, req.user!.id);
+  if (result.error) {
+    return res.status(result.status || 500).json({ error: result.error });
+  }
+  res.json(result.data);
+});
+
+productionBatchesRouter.post('/:id/reject', requireRole('OWNER', 'ADMIN'), async (req: AuthRequest, res: Response) => {
+  const result = await productionBatchesService.rejectProductionBatch(req.params.id, req.user!.id);
+  if (result.error) {
+    return res.status(result.status || 500).json({ error: result.error });
+  }
+  res.json(result.data);
+});
+
+productionBatchesRouter.patch('/:id', requireRole('OWNER', 'ADMIN', 'BAKER', 'CAKE_WORKER', 'SAMBUSA_WORKER'), async (req: AuthRequest, res: Response) => {
+  const result = await productionBatchesService.updateProductionBatch(req.params.id, req.body, req.user);
+  if (result.error) {
+    return res.status(result.status || 500).json({ error: result.error });
+  }
+  res.json(result.data);
+});
+
+productionBatchesRouter.delete('/:id', requireRole('OWNER', 'ADMIN'), async (req, res: Response) => {
+  const result = await productionBatchesService.deleteProductionBatch(req.params.id);
+  if (result.error) {
+    return res.status(result.status || 500).json({ error: result.error });
+  }
+  res.json(result.data);
+});

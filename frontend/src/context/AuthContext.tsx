@@ -1,0 +1,164 @@
+'use client';
+
+import React, { createContext, useContext, useEffect, useState } from 'react';
+import { useRouter } from 'next/navigation';
+import { api } from '@/lib/axios';
+import { syncPushSubscription, unsubscribePush } from '@/lib/pushNotifications';
+
+export interface AuthUser {
+  id: string;
+  fullName: string;
+  phone: string;
+  role: 'OWNER' | 'ADMIN' | 'BAKER' | 'CAKE_WORKER' | 'CASHIER' | 'SAMBUSA_WORKER' | 'STOCK_KEEPER' | 'EMPLOYEE';
+  branchId: string | null;
+  branch?: {
+    id: string;
+    name: string;
+  };
+  customRoleId?: string | null;
+  permissions?: string[];
+  customRole?: {
+    id: string;
+    code: string;
+    name: string;
+    nameAm?: string | null;
+    nameOm?: string | null;
+    description?: string | null;
+    baseRole: string;
+    permissions: string[];
+  } | null;
+  avatarUrl?: string | null;
+  filesUrl?: string | null;
+  shift?: string | null;
+  salary?: number | null;
+  startDate?: string | null;
+  isActive?: boolean;
+}
+
+export interface LoginResponse {
+  token: string;
+  user: AuthUser;
+}
+
+interface AuthContextType {
+  user: AuthUser | null;
+  isAuthenticated: boolean;
+  isLoading: boolean;
+  login: (data: LoginResponse) => void;
+  logout: () => void;
+  updateUser: (updated: Partial<AuthUser>) => void;
+}
+
+const AuthContext = createContext<AuthContextType | undefined>(undefined);
+
+export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const [user, setUser] = useState<AuthUser | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+
+  const router = useRouter();
+
+  const updateUser = (updated: Partial<AuthUser>) => {
+    setUser((prev) => {
+      if (!prev) return null;
+      const next = { ...prev, ...updated };
+      try {
+        localStorage.setItem('erp_user', JSON.stringify(next));
+      } catch {}
+      return next;
+    });
+  };
+
+  useEffect(() => {
+    const initializeAuth = async () => {
+      const token = localStorage.getItem('token');
+      const stored = localStorage.getItem('erp_user');
+      if (token) {
+        if (stored) {
+          try {
+            setUser(JSON.parse(stored));
+          } catch {}
+        }
+        try {
+          const { data } = await api.get<AuthUser>('/auth/me');
+          setUser(data);
+          localStorage.setItem('erp_user', JSON.stringify(data));
+          syncPushSubscription().catch(() => {});
+        } catch (error) {
+          localStorage.removeItem('token');
+          localStorage.removeItem('erp_user');
+          setUser(null);
+        }
+      } else {
+        localStorage.removeItem('erp_user');
+        setUser(null);
+      }
+      setIsLoading(false);
+    };
+
+    initializeAuth();
+
+    const handleAuthError = () => {
+      setUser(null);
+      localStorage.removeItem('token');
+      localStorage.removeItem('erp_user');
+      router.push('/login');
+    };
+
+    window.addEventListener('auth-error', handleAuthError);
+    return () => window.removeEventListener('auth-error', handleAuthError);
+  }, [router]);
+
+  const login = (data: LoginResponse) => {
+    localStorage.setItem('token', data.token);
+    try {
+      localStorage.setItem('erp_user', JSON.stringify(data.user));
+    } catch {}
+    setUser(data.user);
+    syncPushSubscription().catch(() => {});
+    if (typeof window !== 'undefined') {
+      window.scrollTo(0, 0);
+    }
+    if (data.user.role === 'EMPLOYEE') {
+      router.push('/my-profile');
+    } else if (data.user.role === 'ADMIN') {
+      router.push('/production/history');
+    } else if (data.user.role === 'CASHIER') {
+      router.push('/customer-credits');
+    } else if (data.user.role === 'STOCK_KEEPER') {
+      router.push('/stock');
+    } else if (data.user.role === 'BAKER' || data.user.role === 'CAKE_WORKER' || data.user.role === 'SAMBUSA_WORKER') {
+      router.push('/production');
+    } else {
+      router.push('/');
+    }
+  };
+
+  const logout = async () => {
+    try {
+      await unsubscribePush().catch(() => {});
+      if (localStorage.getItem('token')) {
+        await api.post('/auth/logout');
+      }
+    } catch (e) {
+      // Ignore errors on logout
+    }
+    localStorage.removeItem('token');
+    localStorage.removeItem('erp_user');
+    setUser(null);
+    router.push('/login');
+  };
+
+  return (
+    <AuthContext.Provider value={{ user, isAuthenticated: !!user, isLoading, login, logout, updateUser }}>
+      {children}
+    </AuthContext.Provider>
+  );
+};
+
+export const useAuth = () => {
+  const context = useContext(AuthContext);
+  if (context === undefined) {
+    throw new Error('useAuth must be used within an AuthProvider');
+  }
+  return context;
+};

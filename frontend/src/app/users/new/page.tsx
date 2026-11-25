@@ -1,0 +1,521 @@
+"use client";
+
+import { useState } from "react";
+import { useRouter } from "next/navigation";
+import Link from "next/link";
+import DashboardLayout from "@/components/DashboardLayout";
+import { EthDatePicker } from "@/components/EthDatePicker";
+import { api } from "@/lib/axios";
+import { useAuth } from "@/context/AuthContext";
+import { useBranch } from "@/context/BranchContext";
+import { useLanguage } from "@/context/LanguageContext";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { toast } from "sonner";
+import { ArrowLeft, UserPlus, Building2, Calendar, FileText, Upload, Save, Eye, EyeOff } from "lucide-react";
+import { useQueryClient } from "@tanstack/react-query";
+import { useUnsavedChanges } from "@/hooks/useUnsavedChanges";
+import { ConfirmModal } from "@/components/ConfirmModal";
+
+const ROLES = ["OWNER", "ADMIN", "BAKER", "CAKE_WORKER", "CASHIER", "SAMBUSA_WORKER", "STOCK_KEEPER", "EMPLOYEE"] as const;
+const HUB_ONLY_ROLES = new Set<string>(["BAKER", "CAKE_WORKER", "SAMBUSA_WORKER", "STOCK_KEEPER"]);
+const SHIFTS = ["DAY", "NIGHT"] as const;
+
+export default function NewUserPage() {
+  const router = useRouter();
+  const { user } = useAuth();
+  const { branches } = useBranch();
+  const { t, l } = useLanguage();
+  const queryClient = useQueryClient();
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isFormChanged, setIsFormChanged] = useState(false);
+  const [selectedBranchId, setSelectedBranchId] = useState<string>("");
+  const [selectedRole, setSelectedRole] = useState<string>("");
+  const [requiresAttendance, setRequiresAttendance] = useState<boolean>(true);
+  const [startDateVal, setStartDateVal] = useState<string>("");
+  const [lastPaidDateVal, setLastPaidDateVal] = useState<string>("");
+  const [lastPaidTouched, setLastPaidTouched] = useState<boolean>(false);
+  const [showPassword, setShowPassword] = useState<boolean>(false);
+
+  const isFormDirty = isFormChanged || !!startDateVal || !!lastPaidDateVal;
+  const { showPrompt, setShowPrompt, confirmAction, guardedAction } = useUnsavedChanges(isFormDirty);
+
+  const handleStartDateChange = (val: string) => {
+    setIsFormChanged(true);
+    setStartDateVal(val);
+    if (!lastPaidTouched || !lastPaidDateVal) {
+      setLastPaidDateVal(val);
+    }
+  };
+
+  const handleLastPaidDateChange = (val: string) => {
+    setIsFormChanged(true);
+    setLastPaidDateVal(val);
+    setLastPaidTouched(true);
+  };
+
+  const getRoleLabel = (role: string) => {
+    switch (role) {
+      case "OWNER": return t('users.roleOwner');
+      case "ADMIN": return t('users.roleAdmin');
+      case "BAKER": return t('users.roleBaker');
+      case "CAKE_WORKER": return t('users.roleCakeWorker');
+      case "CASHIER": return t('users.roleCashier');
+      case "SAMBUSA_WORKER": return t('users.roleSambusaWorker');
+      case "STOCK_KEEPER": return t('users.roleStockKeeper');
+      case "EMPLOYEE": return t('users.roleEmployee');
+      default: return role.replace("_", " ");
+    }
+  };
+
+  const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    setIsSubmitting(true);
+
+    try {
+      const formData = new FormData(e.currentTarget);
+      const phoneStr = (formData.get("phone") as string)?.trim();
+      if (!/^(?:\+251|0)[97]\d{8}$/.test(phoneStr)) {
+        toast.error(t("users.toastInvalidPhone"));
+        setIsSubmitting(false);
+        return;
+      }
+
+      const passwordStr = formData.get("password") as string;
+      if (!passwordStr || passwordStr.length < 4) {
+        toast.error(t("users.toastPasswordLength"));
+        setIsSubmitting(false);
+        return;
+      }
+
+      const roleStr = formData.get("role") as string;
+      if (roleStr === "OWNER" && user?.role !== "OWNER") {
+        toast.error(t("users.toastOnlyOwnerCreateOwner"));
+        setIsSubmitting(false);
+        return;
+      }
+
+      const startDateStr = formData.get("startDate") as string;
+      const lastPaidDateStr = formData.get("lastPaidDate") as string;
+      if (startDateStr && lastPaidDateStr) {
+        if (new Date(lastPaidDateStr).getTime() < new Date(startDateStr).getTime()) {
+          toast.error(t('users.invalidDateRange') || "Last paid date cannot be earlier than employment start date");
+          setIsSubmitting(false);
+          return;
+        }
+      }
+
+      const file = formData.get("file") as File;
+      if (!file || file.size === 0) {
+        toast.error(t('users.idDocumentRequired') || "Identification document is required.");
+        setIsSubmitting(false);
+        return;
+      }
+
+      const avatarFile = formData.get("avatar") as File | null;
+      if (!avatarFile || avatarFile.size === 0) {
+        formData.delete("avatar");
+      }
+
+      // Clean up empty strings
+      if (!formData.get("salary")) formData.delete("salary");
+      if (!formData.get("dailyExpense")) formData.delete("dailyExpense");
+      if (!formData.get("startDate")) formData.delete("startDate");
+      if (!formData.get("lastPaidDate")) formData.delete("lastPaidDate");
+      if (!formData.get("branchId")) formData.delete("branchId");
+      if (!formData.get("shift")) formData.delete("shift");
+
+      await api.post("/users", formData, {
+        headers: { "Content-Type": "multipart/form-data" },
+      });
+
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["users-page"] }),
+        queryClient.invalidateQueries({ queryKey: ["users"] }),
+        queryClient.invalidateQueries({ queryKey: ["payroll-users"] }),
+        queryClient.invalidateQueries({ queryKey: ["dashboard"] }),
+      ]);
+      setIsFormChanged(false);
+      toast.success(t('users.toastUserCreated'));
+      router.push("/users");
+    } catch (error: any) {
+      toast.error(error.response?.data?.error || "Failed to create user");
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  return (
+    <DashboardLayout>
+      <div className="max-w-3xl mx-auto pb-12">
+        {/* Header with Back Button */}
+        <div className="flex items-center gap-3 mb-6">
+          <Button
+            type="button"
+            variant="outline"
+            size="icon"
+            onClick={() => guardedAction(() => router.push("/users"))}
+            className="w-10 h-10 rounded-xl border-[#EDE4D5] hover:bg-[#FAF6F0] text-[#4A2E1B]"
+          >
+            <ArrowLeft className="w-5 h-5" />
+          </Button>
+          <div>
+            <h1 className="text-2xl sm:text-3xl font-extrabold tracking-tight text-[#2C1B10]">
+              {t('users.addNewPersonnel')}
+            </h1>
+            <p className="text-xs sm:text-sm text-[#8C7361] mt-0.5">
+              {t('users.newPersonnelSubtitle')}
+            </p>
+          </div>
+        </div>
+
+        <form onSubmit={handleSubmit} onChange={() => setIsFormChanged(true)} className="space-y-6">
+          {/* Section 1: Personal & Account Info */}
+          <div className="bg-white rounded-2xl border border-[#EDE4D5] p-4 sm:p-6 shadow-xs space-y-4">
+            <div className="flex items-center gap-2 border-b border-[#EDE4D5] pb-3">
+              <div className="w-8 h-8 rounded-lg bg-amber-50 text-[#E87A18] flex items-center justify-center">
+                <UserPlus className="w-4 h-4" />
+              </div>
+              <div>
+                <h2 className="text-sm font-extrabold text-[#2C1B10]">{t('users.sectionAccountIdentity')}</h2>
+                <p className="text-xs text-[#8C7361]">{t('users.sectionAccountIdentityDesc')}</p>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div>
+                <label className="text-xs font-bold text-[#2C1B10] block mb-1.5">
+                  {t('users.fullNameLabel')} <span className="text-rose-600">*</span>
+                </label>
+                <Input
+                  name="fullName"
+                  placeholder={t('users.fullNamePlaceholder')}
+                  required
+                  className="h-11 rounded-xl border-[#EDE4D5] text-sm"
+                />
+              </div>
+
+              <div>
+                <label className="text-xs font-bold text-[#2C1B10] block mb-1.5">
+                  {t('users.phoneNumberLabel')} <span className="text-rose-600">*</span>
+                </label>
+                <Input
+                  name="phone"
+                  placeholder={t('users.phonePlaceholder')}
+                  required
+                  className="h-11 rounded-xl border-[#EDE4D5] text-sm"
+                />
+              </div>
+
+              <div>
+                <label className="text-xs font-bold text-[#2C1B10] block mb-1.5">
+                  {t('users.passwordLabel')} <span className="text-rose-600">*</span>
+                </label>
+                <div className="relative">
+                  <Input
+                    name="password"
+                    type={showPassword ? "text" : "password"}
+                    placeholder={t('users.passwordPlaceholder')}
+                    required
+                    className="h-11 rounded-xl border-[#EDE4D5] text-sm pr-10"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowPassword(!showPassword)}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-[#8C7361] hover:text-[#2C1B10]"
+                    tabIndex={-1}
+                    title={showPassword ? "Hide password" : "Show password"}
+                  >
+                    {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  </button>
+                </div>
+              </div>
+
+              <div>
+                <label className="text-xs font-bold text-[#2C1B10] block mb-1.5">
+                  {t('users.systemRoleLabel')} <span className="text-rose-600">*</span>
+                </label>
+                {(() => {
+                  const selectedBranch = branches.find((b) => b.id === selectedBranchId);
+                  const isRetailSpoke = Boolean(selectedBranch && !selectedBranch.isHub);
+                  const baseRoles = user?.role === "OWNER" ? [...ROLES] : ROLES.filter((r) => r !== "OWNER");
+                  const filteredRoles = isRetailSpoke ? baseRoles.filter((r) => !HUB_ONLY_ROLES.has(r)) : baseRoles;
+                  return (
+                    <>
+                      <select
+                        name="role"
+                        required
+                        value={selectedRole}
+                        onChange={(e) => {
+                          setSelectedRole(e.target.value);
+                          setIsFormChanged(true);
+                        }}
+                        className="w-full h-11 rounded-xl border border-[#EDE4D5] bg-white px-3 text-sm focus:outline-none focus:ring-2 focus:ring-[#E87A18]"
+                      >
+                        <option value="" disabled>{t('users.selectRolePlaceholder')}</option>
+                        {filteredRoles.map((r) => (
+                          <option key={r} value={r}>
+                            {getRoleLabel(r)}
+                          </option>
+                        ))}
+                      </select>
+                      {isRetailSpoke && (
+                        <p className="text-[11px] text-amber-800 mt-1 font-medium">
+                          {l(
+                            "የሽያጭ ቅርንጫፍ ጋጋሪ እና የዕቃ ግምጃ ቤት ኃላፊ አይፈቅድም (ካሺየር/ሠራተኛ/አስተዳዳሪ ብቻ)።",
+                            "Dameen gurgurtaa gahee oomishaa hin heyyamu.",
+                            "Retail Spoke selected: only retail/management roles (Cashier, Employee, Admin) are available."
+                          )}
+                        </p>
+                      )}
+                    </>
+                  );
+                })()}
+              </div>
+            </div>
+          </div>
+
+          {/* Section 2: Branch & Shift Assignment */}
+          <div className="bg-white rounded-2xl border border-[#EDE4D5] p-4 sm:p-6 shadow-xs space-y-4">
+            <div className="flex items-center gap-2 border-b border-[#EDE4D5] pb-3">
+              <div className="w-8 h-8 rounded-lg bg-blue-50 text-blue-700 flex items-center justify-center">
+                <Building2 className="w-4 h-4" />
+              </div>
+              <div>
+                <h2 className="text-sm font-extrabold text-[#2C1B10]">{t('users.sectionBranchSchedule')}</h2>
+                <p className="text-xs text-[#8C7361]">{t('users.sectionBranchScheduleDesc')}</p>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div>
+                <label className="text-xs font-bold text-[#2C1B10] block mb-1.5">
+                  {t('users.branchAssignmentLabel')}
+                </label>
+                <select
+                  name="branchId"
+                  value={selectedBranchId}
+                  onChange={(e) => {
+                    const nextBid = e.target.value;
+                    setSelectedBranchId(nextBid);
+                    setIsFormChanged(true);
+                    const b = branches.find((br) => br.id === nextBid);
+                    if (b && !b.isHub && HUB_ONLY_ROLES.has(selectedRole)) {
+                      setSelectedRole("");
+                      toast.info(
+                        l(
+                          "የተመረጠው ቅርንጫፍ የሽያጭ ብቻ ስለሆነ የምርት/ክምችት ኃላፊነት ተሰርዟል።",
+                          "Dameen kun gurgurtaa qofa waan ta'eef gaheen oomishaa haqameera.",
+                          "Retail Spoke branch selected: Hub-only role cleared. Please select a retail role."
+                        )
+                      );
+                    }
+                  }}
+                  className="w-full h-11 rounded-xl border border-[#EDE4D5] bg-white px-3 text-sm focus:outline-none focus:ring-2 focus:ring-[#E87A18]"
+                >
+                  <option value="">{t('users.globalAllBranches')}</option>
+                  {branches.map((b) => (
+                    <option key={b.id} value={b.id}>
+                      {b.name} ({b.isHub ? l("የምርት ማዕከል", "Wiirtuu", "Hub") : l("ሽያጭ", "Gurgurtaa", "Retail")})
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="text-xs font-bold text-[#2C1B10] block mb-1.5">
+                  {t('users.assignedShiftLabel')}
+                </label>
+                <select
+                  name="shift"
+                  defaultValue=""
+                  className="w-full h-11 rounded-xl border border-[#EDE4D5] bg-white px-3 text-sm focus:outline-none focus:ring-2 focus:ring-[#E87A18]"
+                >
+                  <option value="">{t('users.noShiftAssigned')}</option>
+                  {SHIFTS.map((s) => (
+                    <option key={s} value={s}>
+                      {s === "DAY" ? t('users.dayShiftOption') : s === "NIGHT" ? t('users.nightShiftOption') : s}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+
+            {/* Requires Face Check-In Toggle */}
+            <div className="pt-2">
+              <input type="hidden" name="requiresAttendance" value={requiresAttendance ? "true" : "false"} />
+              <label className="flex items-center justify-between gap-4 p-3.5 rounded-xl border border-[#EDE4D5] bg-[#FAF6F0]/60 cursor-pointer hover:bg-[#FAF6F0] transition-colors">
+                <div>
+                  <span className="text-xs font-bold text-[#2C1B10] block">
+                    {l("የፊት ስካን መገኘት (Check-In) ያስፈልጋል", "Galmeen Argamaa (Check-In) ni barbaachisa", "Requires Face Check-In (Attendance)")}
+                  </span>
+                  <span className="text-[11px] text-[#8C7361] block mt-0.5">
+                    {l(
+                      "ይህ ሠራተኛ በየቀኑ በካሜራ መግቢያና መውጫ መመዝገብ ካለበት ያብሩት።",
+                      "Yoo hojjataan kun guyyaa guyyaan galmaa'uu qabu banaa.",
+                      "Enable only for staff who must clock in/out at the attendance kiosk."
+                    )}
+                  </span>
+                </div>
+                <input
+                  type="checkbox"
+                  checked={requiresAttendance}
+                  onChange={(e) => {
+                    setRequiresAttendance(e.target.checked);
+                    setIsFormChanged(true);
+                  }}
+                  className="w-4 h-4 accent-[#E87A18] rounded shrink-0 cursor-pointer"
+                />
+              </label>
+            </div>
+          </div>
+
+          {/* Section 3: Compensation & Ethiopian Dates */}
+          <div className="bg-white rounded-2xl border border-[#EDE4D5] p-4 sm:p-6 shadow-xs space-y-4">
+            <div className="flex items-center gap-2 border-b border-[#EDE4D5] pb-3">
+              <div className="w-8 h-8 rounded-lg bg-emerald-50 text-emerald-700 flex items-center justify-center">
+                <Calendar className="w-4 h-4" />
+              </div>
+              <div>
+                <h2 className="text-sm font-extrabold text-[#2C1B10]">{t('users.sectionPayrollTimeline')}</h2>
+                <p className="text-xs text-[#8C7361]">{t('users.sectionPayrollTimelineDesc')}</p>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div>
+                <label className="text-xs font-bold text-[#2C1B10] block mb-1.5">
+                  {t('users.monthlyBaseSalaryLabel')}
+                </label>
+                <Input
+                  name="salary"
+                  type="number"
+                  step="0.01"
+                  min="0"
+                  placeholder="0.00"
+                  onFocus={(e) => e.target.select()}
+                  className="h-11 rounded-xl border-[#EDE4D5] text-sm font-mono"
+                />
+              </div>
+
+              <div>
+                <label className="text-xs font-bold text-[#2C1B10] block mb-1.5">
+                  {t('users.dailyExpenseLabel') || "Daily Expense"}
+                </label>
+                <Input
+                  name="dailyExpense"
+                  type="number"
+                  step="0.01"
+                  min="0"
+                  placeholder="0.00"
+                  onFocus={(e) => e.target.select()}
+                  className="h-11 rounded-xl border-[#EDE4D5] text-sm font-mono"
+                />
+              </div>
+
+              <div>
+                <label className="text-xs font-bold text-[#2C1B10] block mb-1.5">
+                  {t('users.employmentStartDateLabel')}
+                </label>
+                <EthDatePicker name="startDate" value={startDateVal} onChange={handleStartDateChange} />
+              </div>
+
+              <div>
+                <label className="text-xs font-bold text-[#2C1B10] block mb-1.5">
+                  {t('users.lastPaidDateLabel')}
+                </label>
+                <EthDatePicker name="lastPaidDate" value={lastPaidDateVal} onChange={handleLastPaidDateChange} />
+                <p className="text-[10px] text-[#8C7361] mt-1">{t('users.autoCalculatedFromStartDate') || 'Auto-calculated from employment start date'}</p>
+              </div>
+            </div>
+          </div>
+
+          {/* Section 4: Media & Documents */}
+          <div className="bg-white rounded-2xl border border-[#EDE4D5] p-4 sm:p-6 shadow-xs space-y-6">
+            <div className="flex items-center gap-2 border-b border-[#EDE4D5] pb-3">
+              <div className="w-8 h-8 rounded-lg bg-purple-50 text-purple-700 flex items-center justify-center">
+                <FileText className="w-4 h-4" />
+              </div>
+              <div>
+                <h2 className="text-sm font-extrabold text-[#2C1B10]">{t('users.sectionDocs') || "Staff Media & Documentation"}</h2>
+                <p className="text-xs text-[#8C7361]">{t('users.uploadPersonnelMediaDesc') || 'Upload personnel profile photo and official employment identification file'}</p>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              {/* Profile Avatar (Optional) */}
+              <div className="border border-[#EDE4D5] rounded-2xl p-4 bg-[#FAF6F0]/30 flex flex-col justify-between">
+                <div>
+                  <label className="text-xs font-bold text-[#2C1B10] block mb-1">
+                    Profile Picture <span className="text-zinc-400 font-normal">(Optional)</span>
+                  </label>
+                  <p className="text-[11px] text-[#8C7361] mb-3">
+                    Headshot or avatar image (JPG, PNG, WebP). Stored under <span className="font-mono font-semibold text-zinc-600">/uploads/avatars/</span>
+                  </p>
+                </div>
+                <Input
+                  name="avatar"
+                  type="file"
+                  accept="image/jpeg,image/png,image/webp,image/jpg"
+                  className="w-full text-xs cursor-pointer border-[#EDE4D5] bg-white rounded-xl h-10"
+                />
+              </div>
+
+              {/* ID Document (Mandatory) */}
+              <div className="border border-[#EDE4D5] rounded-2xl p-4 bg-[#FAF6F0]/30 flex flex-col justify-between">
+                <div>
+                  <label className="text-xs font-bold text-[#2C1B10] block mb-1">
+                    {t('users.attachmentFileLabel') || "Identification Document"} <span className="text-rose-600">*</span>
+                  </label>
+                  <p className="text-[11px] text-[#8C7361] mb-3">
+                    {t('users.idDocumentFormatsDesc') || 'Kebele ID, passport, contract, or license (PDF or Image). Stored under /uploads/documents/'}
+                  </p>
+                </div>
+                <Input
+                  name="file"
+                  type="file"
+                  required
+                  accept=".pdf,image/jpeg,image/png,image/webp,image/jpg"
+                  className="w-full text-xs cursor-pointer border-[#EDE4D5] bg-white rounded-xl h-10"
+                />
+              </div>
+            </div>
+          </div>
+
+          {/* Action Buttons */}
+          <div className="flex flex-col sm:flex-row gap-3 pt-2">
+            <Button
+              type="submit"
+              loading={isSubmitting}
+              size="lg"
+              className="order-1 sm:order-2 flex-1"
+            >
+              <Save className="w-4 h-4" />
+              {t('users.btnCreatePersonnel')}
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              size="lg"
+              onClick={() => guardedAction(() => router.push("/users"))}
+              className="w-full sm:w-auto order-2 sm:order-1 sm:flex-initial"
+            >
+              {t('common.cancel')}
+            </Button>
+          </div>
+        </form>
+      </div>
+
+      <ConfirmModal
+        isOpen={showPrompt}
+        title={t('common.unsavedChanges') || 'Unsaved Changes'}
+        description={t('users.discardRegistrationConfirm') || 'You have entered personnel registration details. Are you sure you want to discard them and leave?'}
+        confirmText={t('common.discardChanges') || 'Discard Changes'}
+        cancelText={t('common.keepEditing') || 'Keep Editing'}
+        variant="warning"
+        onConfirm={confirmAction}
+        onCancel={() => setShowPrompt(false)}
+      />
+    </DashboardLayout>
+  );
+}

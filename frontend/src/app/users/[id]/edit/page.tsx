@@ -1,0 +1,840 @@
+"use client";
+
+import { useEffect, useState } from "react";
+import { useRouter, useParams } from "next/navigation";
+import Link from "next/link";
+import DashboardLayout from "@/components/DashboardLayout";
+import { EthDatePicker } from "@/components/EthDatePicker";
+import { api } from "@/lib/axios";
+import { useAuth } from "@/context/AuthContext";
+import { useBranch } from "@/context/BranchContext";
+import { useLanguage } from "@/context/LanguageContext";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { toast } from "sonner";
+import { getFileUrl, getImageUrl } from "@/lib/utils";
+import { ArrowLeft, UserCheck, Building2, Calendar, FileText, Upload, Save, Trash2, Eye, EyeOff, AlertTriangle, Lock } from "lucide-react";
+import { useQueryClient } from "@tanstack/react-query";
+import { DetailSkeleton } from "@/components/ui/skeletons";
+import { useUnsavedChanges } from "@/hooks/useUnsavedChanges";
+import { ConfirmModal } from "@/components/ConfirmModal";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogFooter,
+} from "@/components/ui/dialog";
+
+const ETHIOPIAN_PHONE_REGEX = /^(?:\+251|0)[97]\d{8}$/;
+
+const ROLES = ["OWNER", "ADMIN", "BAKER", "CAKE_WORKER", "CASHIER", "SAMBUSA_WORKER", "STOCK_KEEPER", "EMPLOYEE"] as const;
+const HUB_ONLY_ROLES = new Set<string>(["BAKER", "CAKE_WORKER", "SAMBUSA_WORKER", "STOCK_KEEPER"]);
+const SHIFTS = ["DAY", "NIGHT"] as const;
+
+interface UserData {
+  id: string;
+  fullName: string;
+  phone: string;
+  role: string;
+  branchId: string | null;
+  isActive: boolean;
+  salary: number | null;
+  dailyExpense: number | null;
+  startDate: string | null;
+  lastPaidDate: string | null;
+  shift: string | null;
+  avatarUrl?: string | null;
+  filesUrl: string | null;
+  requiresAttendance?: boolean;
+}
+
+export default function EditUserPage() {
+  const router = useRouter();
+  const params = useParams();
+  const userId = params?.id as string;
+  const { user } = useAuth();
+  const { branches } = useBranch();
+  const { t, l } = useLanguage();
+  const queryClient = useQueryClient();
+
+  const [loading, setLoading] = useState(true);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
+  const [isDeleting, setIsDeleting] = useState(false);
+  const [deletePassword, setDeletePassword] = useState("");
+  const [showDeletePassword, setShowDeletePassword] = useState(false);
+  const [showPassword, setShowPassword] = useState(false);
+  const [showCurrentPassword, setShowCurrentPassword] = useState(false);
+  const [isFormChanged, setIsFormChanged] = useState(false);
+  const [userData, setUserData] = useState<UserData | null>(null);
+  const [selectedBranchId, setSelectedBranchId] = useState<string>("");
+  const [selectedRole, setSelectedRole] = useState<string>("");
+  const [requiresAttendance, setRequiresAttendance] = useState<boolean>(true);
+  const [startDateVal, setStartDateVal] = useState<string>("");
+  const [lastPaidDateVal, setLastPaidDateVal] = useState<string>("");
+  const [lastPaidTouched, setLastPaidTouched] = useState<boolean>(false);
+
+  const { showPrompt, setShowPrompt, confirmAction, guardedAction } = useUnsavedChanges(isFormChanged);
+
+  const handleStartDateChange = (val: string) => {
+    setIsFormChanged(true);
+    setStartDateVal(val);
+    if (!lastPaidTouched && !lastPaidDateVal) {
+      setLastPaidDateVal(val);
+    }
+  };
+
+  const handleLastPaidDateChange = (val: string) => {
+    setIsFormChanged(true);
+    setLastPaidDateVal(val);
+    setLastPaidTouched(true);
+  };
+
+  const getRoleLabel = (role: string) => {
+    switch (role) {
+      case "OWNER": return t('users.roleOwner');
+      case "ADMIN": return t('users.roleAdmin');
+      case "BAKER": return t('users.roleBaker');
+      case "CAKE_WORKER": return t('users.roleCakeWorker');
+      case "CASHIER": return t('users.roleCashier');
+      case "SAMBUSA_WORKER": return t('users.roleSambusaWorker');
+      case "STOCK_KEEPER": return t('users.roleStockKeeper');
+      case "EMPLOYEE": return t('users.roleEmployee');
+      default: return role.replace("_", " ");
+    }
+  };
+
+  useEffect(() => {
+    if (!userId) return;
+    const fetchUser = async () => {
+      try {
+        const res = await api.get(`/users/${userId}`).catch(async () => {
+          // Fallback to all users list if single user endpoint isn't supported
+          const listRes = await api.get("/users");
+          const found = listRes.data.find((u: UserData) => u.id === userId);
+          return { data: found };
+        });
+        if (res.data) {
+          setUserData(res.data);
+          setSelectedBranchId(res.data.branchId || "");
+          setSelectedRole(res.data.role || "");
+          setRequiresAttendance(res.data.requiresAttendance !== false);
+          if (res.data.startDate) setStartDateVal(res.data.startDate.split("T")[0]);
+          if (res.data.lastPaidDate) setLastPaidDateVal(res.data.lastPaidDate.split("T")[0]);
+        } else {
+          toast.error(t("users.toastUserNotFound"));
+          router.push("/users");
+        }
+      } catch (err: any) {
+        toast.error(t("users.toastFailedLoadUser"));
+        router.push("/users");
+      } finally {
+        setLoading(false);
+      }
+    };
+    fetchUser();
+  }, [userId, router]);
+
+  const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    if (!userData) return;
+    setIsSubmitting(true);
+
+    try {
+      const formData = new FormData(e.currentTarget);
+
+      if (userData.role === 'OWNER') {
+        const currentPassword = formData.get("currentPassword") as string;
+        if (!currentPassword || !currentPassword.trim()) {
+          toast.error(t("users.toastCurrentPasswordRequired"));
+          setIsSubmitting(false);
+          return;
+        }
+      }
+
+      const phone = formData.get("phone") as string;
+      if (phone && !ETHIOPIAN_PHONE_REGEX.test(phone.trim())) {
+        toast.error(t('users.invalidPhoneFormat') || "Invalid Ethiopian phone format (e.g. 0912345678 or +251912345678)");
+        setIsSubmitting(false);
+        return;
+      }
+
+      const password = formData.get("password") as string;
+      if (password && password.length < 4) {
+        toast.error(t('users.passwordMinLength') || "Password must be at least 4 characters long");
+        setIsSubmitting(false);
+        return;
+      }
+
+      const role = formData.get("role") as string;
+      if (role === 'OWNER' && user?.role !== 'OWNER') {
+        toast.error(t("users.toastOnlyOwnerAssignOwner"));
+        setIsSubmitting(false);
+        return;
+      }
+
+      const startDateStr = formData.get("startDate") as string;
+      const lastPaidDateStr = formData.get("lastPaidDate") as string;
+      if (startDateStr && lastPaidDateStr) {
+        if (new Date(lastPaidDateStr).getTime() < new Date(startDateStr).getTime()) {
+          toast.error(t('users.invalidDateRange') || "Last paid date cannot be earlier than employment start date");
+          setIsSubmitting(false);
+          return;
+        }
+      }
+
+      // Clean up empty strings
+      if (!formData.get("salary")) formData.delete("salary");
+      if (!formData.get("dailyExpense")) formData.delete("dailyExpense");
+      if (!formData.get("startDate")) formData.delete("startDate");
+      if (!formData.get("lastPaidDate")) formData.delete("lastPaidDate");
+      if (!formData.get("branchId")) formData.delete("branchId");
+      if (!formData.get("shift")) formData.delete("shift");
+
+      // Don't update password if empty
+      if (!formData.get("password")) {
+        formData.delete("password");
+      }
+
+      const file = formData.get("file") as File;
+      if (!file || file.size === 0) {
+        formData.delete("file");
+      }
+
+      const avatar = formData.get("avatar") as File;
+      if (!avatar || avatar.size === 0) {
+        formData.delete("avatar");
+      }
+
+      await api.patch(`/users/${userData.id}`, formData, {
+        headers: { "Content-Type": "multipart/form-data" },
+      });
+
+      toast.success(t('users.toastUserUpdated'));
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["users-page"] }),
+        queryClient.invalidateQueries({ queryKey: ["users"] }),
+        queryClient.invalidateQueries({ queryKey: ["user", userData.id] }),
+        queryClient.invalidateQueries({ queryKey: ["payroll-users"] }),
+        queryClient.invalidateQueries({ queryKey: ["dashboard"] }),
+      ]);
+      setIsFormChanged(false);
+      router.push("/users");
+    } catch (error: any) {
+      toast.error(error.response?.data?.error || "Failed to update user");
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const handleDelete = async () => {
+    if (!userData) return;
+    if (user?.role !== "OWNER") {
+      toast.error(t("users.toastOnlyOwnerDelete"));
+      setIsDeleteModalOpen(false);
+      return;
+    }
+    if (!deletePassword.trim()) {
+      toast.error(t("users.toastPasswordConfirmRequired"));
+      return;
+    }
+    try {
+      setIsDeleting(true);
+      const res = await api.delete(`/users/${userData.id}`, {
+        data: { password: deletePassword },
+      });
+      if (res.data?.deactivated) {
+        toast.info(res.data.message || "User deactivated (historical transaction records preserved)");
+      } else {
+        toast.success(t("users.toastUserDeleted"));
+      }
+      queryClient.invalidateQueries({ queryKey: ["users-page"] });
+      queryClient.invalidateQueries({ queryKey: ["payroll-users"] });
+      router.push("/users");
+    } catch (err: any) {
+      toast.error(err.response?.data?.error || "Failed to delete user");
+    } finally {
+      setIsDeleting(false);
+      setIsDeleteModalOpen(false);
+      setDeletePassword("");
+    }
+  };
+
+  if (loading) {
+    return (
+      <DashboardLayout>
+        <div className="max-w-3xl mx-auto pb-12">
+          <DetailSkeleton />
+        </div>
+      </DashboardLayout>
+    );
+  }
+
+  if (!userData) return null;
+
+  return (
+    <DashboardLayout>
+      <div className="max-w-3xl mx-auto pb-12">
+        {/* Header with Back Button */}
+        <div className="flex items-center gap-3 mb-6">
+          <Button
+            type="button"
+            variant="outline"
+            size="icon"
+            onClick={() => guardedAction(() => router.push("/users"))}
+            className="w-10 h-10 rounded-xl border-[#EDE4D5] hover:bg-[#FAF6F0] text-[#4A2E1B]"
+          >
+            <ArrowLeft className="w-5 h-5" />
+          </Button>
+          <div>
+            <h1 className="text-2xl sm:text-3xl font-extrabold tracking-tight text-[#2C1B10]">
+              {t('users.editPersonnel')}: {userData.fullName}
+            </h1>
+            <p className="text-xs sm:text-sm text-[#8C7361] mt-0.5">
+              {t('users.editPersonnelSubtitle')}
+            </p>
+          </div>
+        </div>
+
+        <form onSubmit={handleSubmit} onChange={() => setIsFormChanged(true)} className="space-y-6">
+          {/* Section 1: Personal & Account Info */}
+          <div className="bg-white rounded-2xl border border-[#EDE4D5] p-4 sm:p-6 shadow-xs space-y-4">
+            <div className="flex items-center gap-2 border-b border-[#EDE4D5] pb-3">
+              <div className="w-8 h-8 rounded-lg bg-amber-50 text-[#E87A18] flex items-center justify-center">
+                <UserCheck className="w-4 h-4" />
+              </div>
+              <div>
+                <h2 className="text-sm font-extrabold text-[#2C1B10]">{t('users.sectionAccountIdentity')}</h2>
+                <p className="text-xs text-[#8C7361]">{t('users.sectionAccountIdentityDesc')}</p>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div>
+                <label className="text-xs font-bold text-[#2C1B10] block mb-1.5">
+                  {t('users.fullNameLabel')} <span className="text-rose-600">*</span>
+                </label>
+                <Input
+                  name="fullName"
+                  defaultValue={userData.fullName}
+                  placeholder={t('users.fullNamePlaceholder')}
+                  required
+                  className="h-11 rounded-xl border-[#EDE4D5] text-sm"
+                />
+              </div>
+
+              <div>
+                <label className="text-xs font-bold text-[#2C1B10] block mb-1.5">
+                  {t('users.phoneNumberLabel')} <span className="text-rose-600">*</span>
+                </label>
+                <Input
+                  name="phone"
+                  defaultValue={userData.phone}
+                  placeholder={t('users.phonePlaceholder')}
+                  required
+                  className="h-11 rounded-xl border-[#EDE4D5] text-sm"
+                />
+              </div>
+
+              {/* Owner Current Password Requirement */}
+              {userData.role === 'OWNER' && (
+                <div className="sm:col-span-2 p-3.5 rounded-xl bg-amber-50/70 border border-amber-200/80 space-y-2">
+                  <div className="flex items-center gap-1.5 text-xs font-bold text-amber-900 uppercase">
+                    <Lock className="w-3.5 h-3.5 text-amber-700" />
+                    <span>{t('users.ownerSecurityVerification') || 'Owner Security Verification'}</span>
+                  </div>
+                  <p className="text-[11px] text-[#8C7361]">
+                    To protect owner privileges, your current password is required to save any changes to this account.
+                  </p>
+                  <div>
+                    <label className="text-xs font-bold text-[#2C1B10] block mb-1">
+                      Current Password <span className="text-rose-600">*</span>
+                    </label>
+                    <div className="relative">
+                      <Input
+                        name="currentPassword"
+                        type={showCurrentPassword ? "text" : "password"}
+                        placeholder={t("users.enterCurrentPasswordPlaceholder")}
+                        required
+                        className="h-10 rounded-xl border-[#EDE4D5] bg-white text-sm pr-10"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowCurrentPassword(!showCurrentPassword)}
+                        className="absolute right-3 top-1/2 -translate-y-1/2 text-[#8C7361] hover:text-[#2C1B10]"
+                        title={showCurrentPassword ? "Hide password" : "Show password"}
+                        tabIndex={-1}
+                      >
+                        {showCurrentPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              <div>
+                <label className="text-xs font-bold text-[#2C1B10] block mb-1.5">
+                  {userData.role === 'OWNER' ? 'New Password (Optional)' : t('users.passwordLabel')}{" "}
+                  <span className="text-xs text-zinc-400 font-normal">({t('users.passwordLeaveBlank')})</span>
+                </label>
+                <div className="relative">
+                  <Input
+                    name="password"
+                    type={showPassword ? "text" : "password"}
+                    placeholder={`•••••••• (${t('users.passwordLeaveBlank')})`}
+                    className="h-11 rounded-xl border-[#EDE4D5] text-sm pr-10"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowPassword(!showPassword)}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-[#8C7361] hover:text-[#2C1B10]"
+                    title={showPassword ? "Hide password" : "Show password"}
+                    tabIndex={-1}
+                  >
+                    {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  </button>
+                </div>
+              </div>
+
+              <div>
+                <label className="text-xs font-bold text-[#2C1B10] block mb-1.5">
+                  {t('users.systemRoleLabel')} <span className="text-rose-600">*</span>
+                  {userData.role === 'OWNER' && (
+                    <span className="text-[10px] text-amber-700 ml-1.5 font-bold">(Locked)</span>
+                  )}
+                </label>
+                {userData.role === 'OWNER' ? (
+                  <>
+                    <input type="hidden" name="role" value="OWNER" />
+                    <Input
+                      disabled
+                      value={getRoleLabel("OWNER")}
+                      className="h-11 rounded-xl border-[#EDE4D5] bg-[#FAF6F0] text-sm font-bold text-[#4A2E1B]"
+                    />
+                  </>
+                ) : (() => {
+                  const selectedBranch = branches.find((b) => b.id === selectedBranchId);
+                  const isRetailSpoke = Boolean(selectedBranch && !selectedBranch.isHub);
+                  const baseRoles = ROLES.filter((r) => r !== 'OWNER' || user?.role === 'OWNER');
+                  const filteredRoles = isRetailSpoke ? baseRoles.filter((r) => !HUB_ONLY_ROLES.has(r)) : baseRoles;
+                  return (
+                    <>
+                      <select
+                        name="role"
+                        required
+                        value={selectedRole}
+                        onChange={(e) => {
+                          setSelectedRole(e.target.value);
+                          setIsFormChanged(true);
+                        }}
+                        className="w-full h-11 rounded-xl border border-[#EDE4D5] bg-white px-3 text-sm focus:outline-none focus:ring-2 focus:ring-[#E87A18]"
+                      >
+                        <option value="" disabled>{t('users.selectRolePlaceholder')}</option>
+                        {filteredRoles.map((r) => (
+                          <option key={r} value={r}>
+                            {getRoleLabel(r)}
+                          </option>
+                        ))}
+                      </select>
+                      {isRetailSpoke && (
+                        <p className="text-[11px] text-amber-800 mt-1 font-medium">
+                          {l(
+                            "የሽያጭ ቅርንጫፍ ጋጋሪ እና የዕቃ ግምጃ ቤት ኃላፊ አይፈቅድም (ካሺየር/ሠራተኛ/አስተዳዳሪ ብቻ)።",
+                            "Dameen gurgurtaa gahee oomishaa hin heyyamu.",
+                            "Retail Spoke selected: only retail/management roles (Cashier, Employee, Admin) are available."
+                          )}
+                        </p>
+                      )}
+                    </>
+                  );
+                })()}
+              </div>
+            </div>
+          </div>
+
+          {/* Section 2: Branch & Shift Assignment */}
+          <div className="bg-white rounded-2xl border border-[#EDE4D5] p-4 sm:p-6 shadow-xs space-y-4">
+            <div className="flex items-center gap-2 border-b border-[#EDE4D5] pb-3">
+              <div className="w-8 h-8 rounded-lg bg-blue-50 text-blue-700 flex items-center justify-center">
+                <Building2 className="w-4 h-4" />
+              </div>
+              <div>
+                <h2 className="text-sm font-extrabold text-[#2C1B10]">{t('users.sectionBranchSchedule')}</h2>
+                <p className="text-xs text-[#8C7361]">{t('users.sectionBranchScheduleDesc')}</p>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div>
+                <label className="text-xs font-bold text-[#2C1B10] block mb-1.5">
+                  {t('users.branchAssignmentLabel')}
+                </label>
+                <select
+                  name="branchId"
+                  value={selectedBranchId}
+                  onChange={(e) => {
+                    const nextBid = e.target.value;
+                    setSelectedBranchId(nextBid);
+                    setIsFormChanged(true);
+                    const b = branches.find((br) => br.id === nextBid);
+                    if (b && !b.isHub && HUB_ONLY_ROLES.has(selectedRole)) {
+                      setSelectedRole("CASHIER");
+                      toast.info(
+                        l(
+                          "የተመረጠው ቅርንጫፍ የሽያጭ ብቻ ስለሆነ ኃላፊነቱ ወደ ገንዘብ ተቀባይ ተቀይሯል።",
+                          "Dameen kun gurgurtaa qofa waan ta'eef gaheen gara Kaashiyeeratti jijjiirameera.",
+                          "Retail Spoke branch selected: Hub-only role switched to Cashier."
+                        )
+                      );
+                    }
+                  }}
+                  className="w-full h-11 rounded-xl border border-[#EDE4D5] bg-white px-3 text-sm focus:outline-none focus:ring-2 focus:ring-[#E87A18]"
+                >
+                  <option value="">{t('users.globalAllBranches')}</option>
+                  {branches.map((b) => (
+                    <option key={b.id} value={b.id}>
+                      {b.name} ({b.isHub ? l("የምርት ማዕከል", "Wiirtuu", "Hub") : l("ሽያጭ", "Gurgurtaa", "Retail")})
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="text-xs font-bold text-[#2C1B10] block mb-1.5">
+                  {t('users.assignedShiftLabel')}
+                </label>
+                <select
+                  name="shift"
+                  defaultValue={userData.shift || ""}
+                  className="w-full h-11 rounded-xl border border-[#EDE4D5] bg-white px-3 text-sm focus:outline-none focus:ring-2 focus:ring-[#E87A18]"
+                >
+                  <option value="">{t('users.noShiftAssigned')}</option>
+                  {SHIFTS.map((s) => (
+                    <option key={s} value={s}>
+                      {s === "DAY" ? t('users.dayShiftOption') : s === "NIGHT" ? t('users.nightShiftOption') : s}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+
+            {/* Requires Face Check-In Toggle */}
+            {userData.role !== 'OWNER' && (
+              <div className="pt-2">
+                <input type="hidden" name="requiresAttendance" value={requiresAttendance ? "true" : "false"} />
+                <label className="flex items-center justify-between gap-4 p-3.5 rounded-xl border border-[#EDE4D5] bg-[#FAF6F0]/60 cursor-pointer hover:bg-[#FAF6F0] transition-colors">
+                  <div>
+                    <span className="text-xs font-bold text-[#2C1B10] block">
+                      {l("የፊት ስካን መገኘት (Check-In) ያስፈልጋል", "Galmeen Argamaa (Check-In) ni barbaachisa", "Requires Face Check-In (Attendance)")}
+                    </span>
+                    <span className="text-[11px] text-[#8C7361] block mt-0.5">
+                      {l(
+                        "ይህ ሠራተኛ በየቀኑ በካሜራ መግቢያና መውጫ መመዝገብ ካለበት ያብሩት።",
+                        "Yoo hojjataan kun guyyaa guyyaan galmaa'uu qabu banaa.",
+                        "Enable only for staff who must clock in/out at the attendance kiosk."
+                      )}
+                    </span>
+                  </div>
+                  <input
+                    type="checkbox"
+                    checked={requiresAttendance}
+                    onChange={(e) => {
+                      setRequiresAttendance(e.target.checked);
+                      setIsFormChanged(true);
+                    }}
+                    className="w-4 h-4 accent-[#E87A18] rounded shrink-0 cursor-pointer"
+                  />
+                </label>
+              </div>
+            )}
+          </div>
+
+          {/* Section 3: Compensation & Ethiopian Dates */}
+          <div className="bg-white rounded-2xl border border-[#EDE4D5] p-4 sm:p-6 shadow-xs space-y-4">
+            <div className="flex items-center gap-2 border-b border-[#EDE4D5] pb-3">
+              <div className="w-8 h-8 rounded-lg bg-emerald-50 text-emerald-700 flex items-center justify-center">
+                <Calendar className="w-4 h-4" />
+              </div>
+              <div>
+                <h2 className="text-sm font-extrabold text-[#2C1B10]">{t('users.sectionPayrollTimeline')}</h2>
+                <p className="text-xs text-[#8C7361]">{t('users.sectionPayrollTimelineDesc')}</p>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div>
+                <label className="text-xs font-bold text-[#2C1B10] block mb-1.5">
+                  {t('users.monthlyBaseSalaryLabel')}
+                </label>
+                <Input
+                  name="salary"
+                  type="number"
+                  step="0.01"
+                  min="0"
+                  defaultValue={userData.salary ?? ""}
+                  placeholder="0.00"
+                  onFocus={(e) => e.target.select()}
+                  className="h-11 rounded-xl border-[#EDE4D5] text-sm font-mono"
+                />
+              </div>
+
+              <div>
+                <label className="text-xs font-bold text-[#2C1B10] block mb-1.5">
+                  {t('users.dailyExpenseLabel') || "Daily Expense"}
+                </label>
+                <Input
+                  name="dailyExpense"
+                  type="number"
+                  step="0.01"
+                  min="0"
+                  defaultValue={userData.dailyExpense ?? ""}
+                  placeholder="0.00"
+                  onFocus={(e) => e.target.select()}
+                  className="h-11 rounded-xl border-[#EDE4D5] text-sm font-mono"
+                />
+              </div>
+
+              <div>
+                <label className="text-xs font-bold text-[#2C1B10] block mb-1.5">
+                  {t('users.employmentStartDateLabel')}
+                </label>
+                <EthDatePicker
+                  name="startDate"
+                  value={startDateVal}
+                  onChange={handleStartDateChange}
+                />
+              </div>
+
+              <div>
+                <label className="text-xs font-bold text-[#2C1B10] block mb-1.5">
+                  {t('users.lastPaidDateLabel')}
+                </label>
+                <EthDatePicker
+                  name="lastPaidDate"
+                  value={lastPaidDateVal}
+                  onChange={handleLastPaidDateChange}
+                />
+                <p className="text-[10px] text-[#8C7361] mt-1">{t('users.mustBeAfterStartDate') || 'Must be on or after start date'}</p>
+              </div>
+            </div>
+          </div>
+
+          {/* Section 4: Media & Documents */}
+          <div className="bg-white rounded-2xl border border-[#EDE4D5] p-4 sm:p-6 shadow-xs space-y-6">
+            <div className="flex items-center gap-2 border-b border-[#EDE4D5] pb-3">
+              <div className="w-8 h-8 rounded-lg bg-purple-50 text-purple-700 flex items-center justify-center">
+                <FileText className="w-4 h-4" />
+              </div>
+              <div>
+                <h2 className="text-sm font-extrabold text-[#2C1B10]">{t('users.sectionDocs') || "Staff Media & Documentation"}</h2>
+                <p className="text-xs text-[#8C7361]">{t('users.managePersonnelMediaDesc') || 'Manage personnel profile picture and official identification document separately'}</p>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              {/* Profile Avatar */}
+              <div className="border border-[#EDE4D5] rounded-2xl p-4 bg-[#FAF6F0]/30 flex flex-col justify-between space-y-3">
+                <div>
+                  <label className="text-xs font-bold text-[#2C1B10] block mb-1">
+                    Profile Picture <span className="text-zinc-400 font-normal">(/uploads/avatars/)</span>
+                  </label>
+                  <p className="text-[11px] text-[#8C7361] mb-2">
+                    Used for avatar badges and user identity.
+                  </p>
+
+                  {userData.avatarUrl && (
+                    <div className="flex items-center gap-3 p-2.5 bg-white border border-[#EDE4D5] rounded-xl mb-3">
+                      <img
+                        src={getImageUrl(userData.avatarUrl)!}
+                        alt={userData.fullName}
+                        className="w-10 h-10 rounded-lg object-cover border border-[#E87A18]/30"
+                      />
+                      <span className="text-xs text-zinc-600 font-medium truncate">{t('users.currentAvatarActive') || 'Current avatar active'}</span>
+                    </div>
+                  )}
+                </div>
+                <div>
+                  <label className="text-[11px] font-bold text-[#8C7361] block mb-1">
+                    {userData.avatarUrl ? "Upload New Profile Picture (Optional)" : "Add Profile Picture (Optional)"}
+                  </label>
+                  <Input
+                    name="avatar"
+                    type="file"
+                    accept="image/jpeg,image/png,image/webp,image/jpg"
+                    className="w-full text-xs cursor-pointer border-[#EDE4D5] bg-white rounded-xl h-10"
+                  />
+                </div>
+              </div>
+
+              {/* ID Document */}
+              <div className="border border-[#EDE4D5] rounded-2xl p-4 bg-[#FAF6F0]/30 flex flex-col justify-between space-y-3">
+                <div>
+                  <label className="text-xs font-bold text-[#2C1B10] block mb-1">
+                    Identification Document <span className="text-zinc-400 font-normal">(/uploads/documents/)</span>
+                  </label>
+                  <p className="text-[11px] text-[#8C7361] mb-2">
+                    Official ID, Kebele card, or contract (PDF or Image). Does not alter profile picture.
+                  </p>
+
+                  {userData.filesUrl && (
+                    <div className="flex items-center justify-between p-2.5 bg-blue-50 border border-blue-200 rounded-xl mb-3">
+                      <span className="text-xs font-semibold text-blue-900 truncate">{t('users.officialDocOnFile') || 'Official Document on File'}</span>
+                      <a
+                        href={getFileUrl(userData.filesUrl) || "#"}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-xs font-bold text-blue-700 hover:underline bg-white px-2.5 py-1 rounded-lg border border-blue-200 shrink-0 ml-2"
+                      >
+                        {t('users.viewDocument') || "View"}
+                      </a>
+                    </div>
+                  )}
+                </div>
+                <div>
+                  <label className="text-[11px] font-bold text-[#8C7361] block mb-1">
+                    {userData.filesUrl ? "Replace Identification File (Optional)" : "Upload Identification File"}
+                  </label>
+                  <Input
+                    name="file"
+                    type="file"
+                    accept=".pdf,image/jpeg,image/png,image/webp,image/jpg"
+                    className="w-full text-xs cursor-pointer border-[#EDE4D5] bg-white rounded-xl h-10"
+                  />
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Action Buttons */}
+          <div className="flex flex-col sm:flex-row gap-3 pt-2">
+            <Button
+              type="submit"
+              loading={isSubmitting}
+              size="lg"
+              className="order-1 sm:order-2 flex-1"
+            >
+              <Save className="w-4 h-4" />
+              {t('users.btnUpdatePersonnel')}
+            </Button>
+            {user?.role === "OWNER" && userData.id !== user?.id && userData.role !== "OWNER" && (
+              <Button
+                type="button"
+                variant="outline"
+                size="lg"
+                onClick={() => setIsDeleteModalOpen(true)}
+                className="w-full sm:w-auto order-3 border-rose-200 text-rose-600 hover:bg-rose-50 hover:text-rose-700 font-bold"
+              >
+                <Trash2 className="w-4 h-4 mr-1.5" />
+                {t('common.delete') || "Delete"}
+              </Button>
+            )}
+            <Button
+              type="button"
+              variant="outline"
+              size="lg"
+              onClick={() => guardedAction(() => router.push("/users"))}
+              className="w-full sm:w-auto order-2 sm:order-1 sm:flex-initial"
+            >
+              {t('common.cancel')}
+            </Button>
+          </div>
+        </form>
+      </div>
+
+      <ConfirmModal
+        isOpen={showPrompt}
+        title={t('common.unsavedChanges') || 'Unsaved Changes'}
+        description="You have unsaved employee changes. Are you sure you want to discard them and leave?"
+        confirmText={t('common.discardChanges') || 'Discard Changes'}
+        cancelText={t('common.keepEditing') || 'Keep Editing'}
+        variant="warning"
+        onConfirm={confirmAction}
+        onCancel={() => setShowPrompt(false)}
+      />
+
+      <Dialog open={isDeleteModalOpen} onOpenChange={(open) => {
+        setIsDeleteModalOpen(open);
+        if (!open) {
+          setDeletePassword("");
+          setShowDeletePassword(false);
+        }
+      }}>
+        <DialogContent className="max-w-md bg-white border border-[#EDE4D5] rounded-2xl p-6 shadow-xl">
+          <DialogHeader>
+            <div className="flex items-start gap-3">
+              <div className="w-10 h-10 rounded-xl bg-rose-50 text-rose-600 flex items-center justify-center shrink-0">
+                <AlertTriangle className="w-5 h-5" />
+              </div>
+              <div className="space-y-1 text-left">
+                <DialogTitle className="text-base sm:text-lg font-bold text-[#2C1B10]">
+                  {t('users.deleteUserTitle') || "Delete User"}
+                </DialogTitle>
+                <p className="text-xs sm:text-sm text-[#8C7361] leading-relaxed">
+                  {t('users.deleteUserConfirmWarning') ||
+                    `Are you sure you want to delete ${userData.fullName}? This action cannot be undone.`}
+                </p>
+              </div>
+            </div>
+          </DialogHeader>
+
+          <div className="space-y-1.5 pt-2">
+            <label htmlFor="deleteUserPasswordInput" className="text-xs font-bold text-[#2C1B10]">
+              {t('users.enterPasswordToDeleteUser') || "Enter your password to confirm deletion"} <span className="text-rose-600">*</span>
+            </label>
+            <div className="relative">
+              <Input
+                id="deleteUserPasswordInput"
+                type={showDeletePassword ? "text" : "password"}
+                placeholder={t("users.enterAccountPasswordPlaceholder")}
+                value={deletePassword}
+                onChange={(e) => setDeletePassword(e.target.value)}
+                className="rounded-xl border-[#EDE4D5] pr-10 text-xs sm:text-sm"
+                autoComplete="current-password"
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && deletePassword.trim() && !isDeleting) {
+                    e.preventDefault();
+                    handleDelete();
+                  }
+                }}
+              />
+              <button
+                type="button"
+                onClick={() => setShowDeletePassword(!showDeletePassword)}
+                className="absolute right-3 top-1/2 -translate-y-1/2 text-[#8C7361] hover:text-[#2C1B10]"
+                title={showDeletePassword ? "Hide password" : "Show password"}
+                tabIndex={-1}
+              >
+                {showDeletePassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+              </button>
+            </div>
+          </div>
+
+          <DialogFooter className="flex flex-col sm:flex-row gap-2 pt-3">
+            <Button
+              type="button"
+              variant="outline"
+              size="lg"
+              disabled={isDeleting}
+              onClick={() => setIsDeleteModalOpen(false)}
+              className="w-full sm:w-auto"
+            >
+              {t('common.cancel')}
+            </Button>
+            <Button
+              type="button"
+              variant="destructive"
+              size="lg"
+              loading={isDeleting}
+              disabled={isDeleting || !deletePassword.trim()}
+              onClick={handleDelete}
+              className="w-full sm:w-auto"
+            >
+              {t('common.delete') || "Delete"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </DashboardLayout>
+  );
+}

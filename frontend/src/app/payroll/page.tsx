@@ -1,0 +1,1810 @@
+"use client";
+
+import { EthDatePicker } from "@/components/EthDatePicker";
+import { AppDatePicker } from "@/components/AppDatePicker";
+import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
+import DashboardLayout from "@/components/DashboardLayout";
+import { PayrollNav } from "./PayrollNav";
+import { api } from "@/lib/axios";
+import { useAuth } from "@/context/AuthContext";
+import { useBranch } from "@/context/BranchContext";
+import { useLanguage } from "@/context/LanguageContext";
+import {
+  DollarSign,
+  FileText,
+  FileWarning,
+  Wallet,
+  Plus,
+  Calendar,
+  Edit2,
+  CheckCircle2,
+} from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Badge } from "@/components/ui/badge";
+import { toast } from "sonner";
+import { format } from "date-fns";
+import { EthDateTime } from "ethiopian-calendar-date-converter";
+import { formatEthDate, getEthMonthName } from "@/lib/ethiopianDate";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { Skeleton } from "@/components/ui/skeleton";
+
+const ETH_MONTHS = [
+  "Meskerem",
+  "Tikimt",
+  "Hidar",
+  "Tahsas",
+  "Tir",
+  "Yakatit",
+  "Maggabit",
+  "Miyazya",
+  "Ginbot",
+  "Sene",
+  "Hamle",
+  "Nehase",
+  "Pagume",
+];
+
+type Tab = "RUN" | "HISTORY" | "LOANS" | "PENALTIES";
+type MonthEth = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13;
+
+interface User {
+  id: string;
+  fullName: string;
+  phone: string;
+  role: string;
+  salary?: number;
+  createdAt?: string;
+}
+
+interface Penalty {
+  id: string;
+  userId: string;
+  amount: number;
+  reason: string;
+  date: string;
+  isDeducted: boolean;
+  user?: User;
+}
+
+interface Loan {
+  id: string;
+  userId: string;
+  totalAmount: number;
+  remainingBalance: number;
+  type: string;
+  status: string;
+  date?: string;
+  createdAt: string;
+  user?: User;
+}
+
+interface PayrollRecord {
+  id: string;
+  userId: string;
+  month: number;
+  year: number;
+  baseSalary: number;
+  loanDeductions: number;
+  penaltyDeductions: number;
+  bonus: number;
+  finalAmount: number;
+  paymentDate: string | null;
+  status?: string;
+  user?: User;
+}
+
+interface CalcResult {
+  baseSalary: number;
+  proratedBase: number;
+  loanDeductions: number;
+  penaltyDeductions: number;
+  suggestedFinalAmount: number;
+  undeductedPenalties: Penalty[];
+  openLoans: Loan[];
+  isAlreadyPaid?: boolean;
+}
+
+export default function PayrollPage() {
+  const router = useRouter();
+  const { user } = useAuth();
+  const { selectedBranchId } = useBranch();
+  const { t } = useLanguage();
+  const queryClient = useQueryClient();
+  const [activeTab, setActiveTab] = useState<Tab>("RUN");
+
+  useEffect(() => {
+    if (!user) return;
+    if (user.role !== "OWNER") {
+      if (user.role === "ADMIN") {
+        router.push("/payroll/loans");
+      } else {
+        router.push("/production/history");
+      }
+      toast.error(t('payroll.toastUnauthorizedPayroll'));
+    }
+  }, [user, router]);
+
+  const { data: users = [], isLoading: isLoadingUsers } = useQuery<User[]>({
+    queryKey: ["payroll-users", selectedBranchId],
+    placeholderData: (prev) => prev,
+    enabled: !!user && user.role === "OWNER",
+    queryFn: async () => {
+      const params = selectedBranchId ? { branchId: selectedBranchId } : {};
+      const { data } = await api.get("/users", { params });
+      return (data || []).filter((u: User) => u.role !== "OWNER");
+    },
+  });
+
+  const { data: history = [], isLoading: isLoadingHistory } = useQuery<PayrollRecord[]>({
+    queryKey: ["payroll-history", selectedBranchId],
+    placeholderData: (prev) => prev,
+    enabled: !!user && user.role === "OWNER" && activeTab === "HISTORY",
+    queryFn: async () => {
+      const params = selectedBranchId ? { branchId: selectedBranchId } : {};
+      const { data } = await api.get("/payroll", { params });
+      return data || [];
+    },
+  });
+
+  const { data: loans = [], isLoading: isLoadingLoans } = useQuery<Loan[]>({
+    queryKey: ["payroll-loans", selectedBranchId],
+    placeholderData: (prev) => prev,
+    queryFn: async () => {
+      const params: any = { type: "STAFF" };
+      if (selectedBranchId) params.branchId = selectedBranchId;
+      const { data } = await api.get("/loans", { params });
+      return data || [];
+    },
+    enabled: activeTab === "LOANS",
+  });
+
+  const { data: penalties = [], isLoading: isLoadingPenalties } = useQuery<Penalty[]>({
+    queryKey: ["payroll-penalties", selectedBranchId],
+    placeholderData: (prev) => prev,
+    queryFn: async () => {
+      const params = selectedBranchId ? { branchId: selectedBranchId } : {};
+      const { data } = await api.get("/penalties", { params });
+      return data || [];
+    },
+    enabled: activeTab === "PENALTIES",
+  });
+
+  // RUN PAYROLL STATE
+  const [selectedUser, setSelectedUser] = useState("");
+  const [selectedMonth, setSelectedMonth] = useState<MonthEth>(
+    () => EthDateTime.fromEuropeanDate(new Date()).month as MonthEth,
+  );
+  const [selectedYear, setSelectedYear] = useState(
+    () => EthDateTime.fromEuropeanDate(new Date()).year,
+  );
+  const [calcData, setCalcData] = useState<CalcResult | null>(null);
+  const [deductLoans, setDeductLoans] = useState(true);
+  const [deductPenalties, setDeductPenalties] = useState(true);
+  const [bonus, setBonus] = useState<number>(0);
+  const [customBaseSalary, setCustomBaseSalary] = useState<string>("");
+  const [customLoanDeduction, setCustomLoanDeduction] = useState<string>("");
+  const [customPenaltyDeduction, setCustomPenaltyDeduction] = useState<string>("");
+  const [customFinalAmount, setCustomFinalAmount] = useState<string>("");
+  const [isProcessing, setIsProcessing] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+
+  // HISTORY STATE
+  const [editingPayroll, setEditingPayroll] = useState<PayrollRecord | null>(null);
+  const [isEditPayrollOpen, setIsEditPayrollOpen] = useState(false);
+
+  // LOAN STATE
+  const [isSignedPayroll, setIsSignedPayroll] = useState(true);
+  const [isLoanOpen, setIsLoanOpen] = useState(false);
+  const [editingLoan, setEditingLoan] = useState<Loan | null>(null);
+  const [isEditLoanOpen, setIsEditLoanOpen] = useState(false);
+
+  // PENALTY STATE
+  const [isPenaltyOpen, setIsPenaltyOpen] = useState(false);
+  const [editingPenalty, setEditingPenalty] = useState<Penalty | null>(null);
+  const [isEditPenaltyOpen, setIsEditPenaltyOpen] = useState(false);
+
+  const handleCalculate = async () => {
+    if (!selectedUser) {
+      toast.error(t('payroll.toastSelectEmployeeFirst'));
+      return;
+    }
+    try {
+      const { data } = await api.get(
+        `/payroll/calculate/${selectedUser}?month=${selectedMonth}&year=${selectedYear}`,
+      );
+      setCalcData(data);
+      setBonus(0);
+      const hasLoans = data.openLoans && data.openLoans.length > 0;
+      const hasPenalties = data.undeductedPenalties && data.undeductedPenalties.length > 0;
+      setDeductLoans(hasLoans);
+      setDeductPenalties(hasPenalties);
+      setCustomBaseSalary(String(data.proratedBase || 0));
+      setCustomLoanDeduction(hasLoans ? String(data.loanDeductions || 0) : "0");
+      setCustomPenaltyDeduction(hasPenalties ? String(data.penaltyDeductions || 0) : "0");
+      setCustomFinalAmount("");
+    } catch (err: any) {
+      toast.error(err.response?.data?.error || "Failed to calculate");
+      setCalcData(null);
+    }
+  };
+
+  // Process Draft Payroll
+  const handleProcessPayroll = async () => {
+    if (!calcData) return;
+    try {
+      setIsProcessing(true);
+      const baseToUse = customBaseSalary !== "" ? parseFloat(customBaseSalary) || 0 : calcData.proratedBase;
+      const lDeductions = deductLoans ? (customLoanDeduction !== "" ? parseFloat(customLoanDeduction) || 0 : calcData.loanDeductions) : 0;
+      const pDeductions = deductPenalties ? (customPenaltyDeduction !== "" ? parseFloat(customPenaltyDeduction) || 0 : calcData.penaltyDeductions) : 0;
+      const calculatedNet = baseToUse + bonus - lDeductions - pDeductions;
+      const finalToUse = customFinalAmount !== "" ? parseFloat(customFinalAmount) || 0 : calculatedNet;
+
+      await api.post("/payroll", {
+        userId: selectedUser,
+        month: selectedMonth,
+        year: selectedYear,
+        baseSalary: baseToUse,
+        loanDeductions: lDeductions,
+        penaltyDeductions: pDeductions,
+        bonus: bonus,
+        finalAmount: finalToUse,
+        paymentDate: new Date().toISOString(),
+        isSigned: isSignedPayroll,
+      });
+
+      toast.success(isSignedPayroll ? (t('payroll.markedSignedSuccess') || "Payroll processed and marked as signed") : "Payroll processed successfully");
+      setCalcData(null);
+      setSelectedUser("");
+      queryClient.invalidateQueries({ queryKey: ["payroll-history"] });
+      queryClient.invalidateQueries({ queryKey: ["payroll-loans"] });
+      queryClient.invalidateQueries({ queryKey: ["payroll-penalties"] });
+      queryClient.invalidateQueries({ queryKey: ["payroll-loans-page"] });
+      queryClient.invalidateQueries({ queryKey: ["payroll-penalties-page"] });
+      queryClient.invalidateQueries({ queryKey: ["payroll"] });
+      queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+    } catch (error: any) {
+      toast.error(error.response?.data?.error || "Error processing payroll");
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
+  // Add Loan
+  const handleAddLoan = async (e: React.FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    setIsSubmitting(true);
+    const fd = new FormData(e.currentTarget);
+    const isSigned = fd.get("isSigned") === "on";
+    const date = fd.get("date");
+    try {
+      await api.post("/loans", {
+        type: "STAFF_LOAN",
+        userId: fd.get("userId"),
+        totalAmount: fd.get("amount"),
+        date: date ? String(date) : undefined,
+        isSigned,
+      });
+      toast.success(isSigned ? (t('payroll.markedSignedSuccess') || "Loan recorded as signed") : "Loan recorded successfully");
+      setIsLoanOpen(false);
+      queryClient.invalidateQueries({ queryKey: ["payroll-loans"] });
+      queryClient.invalidateQueries({ queryKey: ["payroll-loans-page"] });
+      queryClient.invalidateQueries({ queryKey: ["payroll"] });
+      queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+    } catch (error: any) {
+      toast.error(error.response?.data?.error || "Failed to add loan");
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  // Edit Loan
+  const handleUpdateLoan = async (e: React.FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    if (!editingLoan) return;
+    setIsSubmitting(true);
+    const fd = new FormData(e.currentTarget);
+    const date = fd.get("date");
+    try {
+      await api.patch(`/loans/${editingLoan.id}`, {
+        totalAmount: fd.get("totalAmount"),
+        remainingBalance: fd.get("remainingBalance"),
+        status: fd.get("status"),
+        date: date ? String(date) : undefined,
+      });
+      toast.success(t('payroll.toastLoanUpdated'));
+      setIsEditLoanOpen(false);
+      setEditingLoan(null);
+      queryClient.invalidateQueries({ queryKey: ["payroll-loans"] });
+      queryClient.invalidateQueries({ queryKey: ["payroll-loans-page"] });
+      queryClient.invalidateQueries({ queryKey: ["payroll"] });
+      queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+    } catch (error: any) {
+      toast.error(error.response?.data?.error || "Failed to update loan");
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  // Add Penalty
+  const handleAddPenalty = async (e: React.FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    setIsSubmitting(true);
+    const fd = new FormData(e.currentTarget);
+    const isSigned = fd.get("isSigned") === "on";
+    try {
+      await api.post("/penalties", {
+        userId: fd.get("userId"),
+        amount: fd.get("amount"),
+        reason: fd.get("reason"),
+        date: fd.get("date"),
+        isSigned,
+      });
+      toast.success(isSigned ? (t('payroll.markedSignedSuccess') || "Penalty recorded as signed") : "Penalty added successfully");
+      setIsPenaltyOpen(false);
+      queryClient.invalidateQueries({ queryKey: ["payroll-penalties"] });
+      queryClient.invalidateQueries({ queryKey: ["payroll-penalties-page"] });
+      queryClient.invalidateQueries({ queryKey: ["payroll"] });
+      queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+    } catch (error: any) {
+      toast.error(error.response?.data?.error || "Failed to add penalty");
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  // Edit Penalty
+  const handleUpdatePenalty = async (e: React.FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    if (!editingPenalty) return;
+    setIsSubmitting(true);
+    const fd = new FormData(e.currentTarget);
+    try {
+      await api.patch(`/penalties/${editingPenalty.id}`, {
+        amount: fd.get("amount"),
+        reason: fd.get("reason"),
+        date: fd.get("date"),
+        isDeducted: fd.get("isDeducted") === "true",
+      });
+      toast.success(t('payroll.toastPenaltyUpdated'));
+      setIsEditPenaltyOpen(false);
+      setEditingPenalty(null);
+      queryClient.invalidateQueries({ queryKey: ["payroll-penalties"] });
+      queryClient.invalidateQueries({ queryKey: ["payroll-penalties-page"] });
+      queryClient.invalidateQueries({ queryKey: ["payroll"] });
+      queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+    } catch (error: any) {
+      toast.error(error.response?.data?.error || "Failed to update penalty");
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  // Edit Payroll Record
+  const handleUpdatePayroll = async (e: React.FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    if (!editingPayroll) return;
+    setIsSubmitting(true);
+    const fd = new FormData(e.currentTarget);
+    try {
+      await api.patch(`/payroll/${editingPayroll.id}`, {
+        baseSalary: fd.get("baseSalary"),
+        bonus: fd.get("bonus"),
+        loanDeductions: fd.get("loanDeductions"),
+        penaltyDeductions: fd.get("penaltyDeductions"),
+        finalAmount: fd.get("finalAmount"),
+        paymentDate: fd.get("paymentDate") || null,
+      });
+      toast.success(t('payroll.toastPayrollUpdated'));
+      setIsEditPayrollOpen(false);
+      setEditingPayroll(null);
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["payroll-history"] }),
+        queryClient.invalidateQueries({ queryKey: ["payroll-users"] }),
+        queryClient.invalidateQueries({ queryKey: ["payroll"] }),
+        queryClient.invalidateQueries({ queryKey: ["dashboard"] }),
+      ]);
+    } catch (error: any) {
+      toast.error(error.response?.data?.error || "Failed to update payroll record");
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  // Calculate live preview net
+  const parsedBase = customBaseSalary !== "" ? parseFloat(customBaseSalary) || 0 : (calcData?.proratedBase || 0);
+  const parsedLoanDeduction = deductLoans ? (customLoanDeduction !== "" ? parseFloat(customLoanDeduction) || 0 : (calcData?.loanDeductions || 0)) : 0;
+  const parsedPenaltyDeduction = deductPenalties ? (customPenaltyDeduction !== "" ? parseFloat(customPenaltyDeduction) || 0 : (calcData?.penaltyDeductions || 0)) : 0;
+  const calculatedNetPayout = parsedBase + bonus - parsedLoanDeduction - parsedPenaltyDeduction;
+
+  return (
+    <DashboardLayout>
+      <div className="flex flex-col lg:flex-row justify-between items-start lg:items-center mb-8 gap-4">
+        <div>
+          <h1 className="text-2xl sm:text-3xl font-extrabold tracking-tight text-[#2C1B10]">
+            {t('payroll.title')}
+          </h1>
+        </div>
+        <PayrollNav />
+      </div>
+
+      {/* CALCULATOR / DRAFT TAB */}
+      {activeTab === "RUN" && (
+        <div className="grid md:grid-cols-3 gap-6 min-w-0 w-full">
+          {/* Settings Picker */}
+          <div className="col-span-1 bg-white p-4 sm:p-5 rounded-xl border border-zinc-200 shadow-sm self-start min-w-0 w-full overflow-hidden">
+            <h2 className="font-semibold mb-4 border-b pb-2 flex items-center">
+              <Calendar className="w-4 h-4 mr-2" /> {t("payroll.termDetails") || "Term Details"}
+            </h2>
+            <div className="space-y-4">
+              <div>
+                <label className="text-sm font-medium mb-1 block">{t("common.employee") || "Employee"}</label>
+                <select
+                  disabled={isLoadingUsers}
+                  className="w-full h-10 border rounded-md px-3 text-sm disabled:opacity-50"
+                  value={selectedUser}
+                  onChange={(e) => {
+                    const userId = e.target.value;
+                    setSelectedUser(userId);
+                    setCalcData(null);
+                    if (userId) {
+                      const uInfo = users.find((u) => u.id === userId);
+                      const rDate = uInfo?.createdAt ? new Date(uInfo.createdAt) : new Date();
+                      const ethRDate = EthDateTime.fromEuropeanDate(rDate);
+                      const mYear = ethRDate.year;
+                      const mMonth = ethRDate.month;
+
+                      if (selectedYear < mYear) {
+                        setSelectedYear(mYear);
+                        setSelectedMonth(mMonth as MonthEth);
+                      } else if (selectedYear === mYear && selectedMonth < mMonth) {
+                        setSelectedMonth(mMonth as MonthEth);
+                      }
+                    }
+                  }}
+                >
+                  <option value="">
+                    {isLoadingUsers ? (t("payroll.loadingEmployees") || "Loading Employees...") : (t("payroll.selectEmployee") || "Select Employee...")}
+                  </option>
+                  {users.map((u) => (
+                    <option key={u.id} value={u.id}>
+                      {u.fullName} - {u.role}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="text-sm font-medium mb-1 block">{t("payroll.colMonth") || "Month"}</label>
+                  <select
+                    disabled={isLoadingUsers || !selectedUser}
+                    className="w-full h-10 border rounded-md px-3 text-sm disabled:opacity-50"
+                    value={selectedMonth}
+                    onChange={(e) => {
+                      setSelectedMonth(Number(e.target.value) as MonthEth);
+                      setCalcData(null);
+                    }}
+                  >
+                    {Array.from({ length: 13 }, (_, i) => i + 1).map((m) => {
+                      const selectedUserInfo = users.find((u) => u.id === selectedUser);
+                      const regDate = selectedUserInfo?.createdAt ? new Date(selectedUserInfo.createdAt) : new Date();
+                      const ethRegDate = EthDateTime.fromEuropeanDate(regDate);
+                      const minYear = ethRegDate.year;
+                      const minMonth = ethRegDate.month;
+
+                      const currentEth = EthDateTime.fromEuropeanDate(new Date());
+                      const maxFutureMonthLimit = currentEth.year === selectedYear ? currentEth.month + 2 : 13;
+
+                      const isPaid = history.some(
+                        (r) => r.userId === selectedUser && r.year === selectedYear && r.month === m,
+                      );
+                      const isDisabled =
+                        selectedYear < minYear ||
+                        (selectedYear === minYear && m < minMonth) ||
+                        (selectedYear === currentEth.year && m > maxFutureMonthLimit) ||
+                        isPaid;
+                      return (
+                        <option key={m} value={m} disabled={isDisabled}>
+                          {getEthMonthName(m)} {isPaid ? `✓ (${t("common.paid")})` : ""}
+                        </option>
+                      );
+                    })}
+                  </select>
+                </div>
+                <div>
+                  <label className="text-sm font-medium mb-1 block">{t("payroll.colYear") || "Year"}</label>
+                  <select
+                    disabled={isLoadingUsers || !selectedUser}
+                    className="w-full h-10 border rounded-md px-3 text-sm disabled:opacity-50"
+                    value={selectedYear}
+                    onChange={(e) => {
+                      const newYear = Number(e.target.value);
+                      setSelectedYear(newYear);
+                      const selectedUserInfo = users.find((u) => u.id === selectedUser);
+                      const regDate = selectedUserInfo?.createdAt ? new Date(selectedUserInfo.createdAt) : new Date();
+                      const ethRegDate = EthDateTime.fromEuropeanDate(regDate);
+                      const minYear = ethRegDate.year;
+                      const minMonth = ethRegDate.month;
+                      if (newYear === minYear && selectedMonth < minMonth) {
+                        setSelectedMonth(minMonth as MonthEth);
+                      }
+                      setCalcData(null);
+                    }}
+                  >
+                    {(() => {
+                      const selectedUserInfo = users.find((u) => u.id === selectedUser);
+                      const regDate = selectedUserInfo?.createdAt ? new Date(selectedUserInfo.createdAt) : new Date();
+                      const ethRegDate = EthDateTime.fromEuropeanDate(regDate);
+                      const currentEthYear = EthDateTime.fromEuropeanDate(new Date()).year;
+                      const minYear = Math.min(ethRegDate.year, currentEthYear);
+                      const maxYear = currentEthYear + 20;
+                      return Array.from({ length: maxYear - minYear + 1 }, (_, i) => minYear + i).map((y) => (
+                        <option key={y} value={y}>
+                          {y}
+                        </option>
+                      ));
+                    })()}
+                  </select>
+                </div>
+              </div>
+              <Button
+                onClick={handleCalculate}
+                className="w-full mt-4 bg-zinc-900 text-white"
+                disabled={!selectedUser}
+              >
+                Preview Draft
+              </Button>
+            </div>
+          </div>
+
+          {/* Calculator Output */}
+          <div className="col-span-1 md:col-span-2 min-w-0 w-full">
+            {!calcData ? (
+              <div className="h-full min-h-[300px] flex flex-col items-center justify-center text-zinc-400 bg-zinc-50 border border-dashed rounded-xl border-zinc-200">
+                <Wallet className="w-10 h-10 mb-2 opacity-50" />
+                <p>{t("payroll.selectEmployeeTermPrompt")}</p>
+              </div>
+            ) : (
+              (() => {
+                const isTermPaid = calcData.isAlreadyPaid || history.some(
+                  (r) => r.userId === selectedUser && r.year === selectedYear && r.month === selectedMonth
+                );
+
+                return (
+                  <div className="bg-white rounded-xl border border-zinc-200 shadow-sm overflow-hidden min-w-0 w-full">
+                    <div className="bg-[#2C1B10] text-white p-4 flex justify-between items-center">
+                      <div>
+                        <h3 className="font-semibold text-lg">{t("payroll.draftingPhase")}</h3>
+                        <p className="text-zinc-300 text-xs mt-0.5">
+                          Adjust monthly long-term loan deductions, bonuses, and base salary.
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="p-6 space-y-6">
+                      {isTermPaid && (
+                        <div className="bg-amber-100 border border-amber-300 rounded-xl p-3.5 px-4 text-amber-900 font-bold text-xs flex items-center justify-between shadow-xs">
+                          <span>⚠️ {t("payroll.termPaidWarning", { month: getEthMonthName(selectedMonth), year: String(selectedYear) })}</span>
+                          <Badge className="bg-amber-700 text-white font-extrabold text-[10px]">{t("common.paid")}</Badge>
+                        </div>
+                      )}
+
+                      {/* Base Salary & Bonus */}
+                      <div className="space-y-3">
+                        <h4 className="text-xs font-bold uppercase text-zinc-500 tracking-wide">
+                          {t("payroll.baseEarningsAndAdjustments") || "Base Earnings & Adjustments"}
+                        </h4>
+                        <div className="flex flex-col xs:flex-row xs:items-center justify-between gap-1 py-2 border-b">
+                          <span className="text-sm font-medium">{t("payroll.originalAgreementSalary")}</span>
+                          <span className="font-semibold text-zinc-800 font-mono">{calcData.baseSalary.toFixed(2)} ETB</span>
+                        </div>
+
+                        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 py-2 border-b">
+                          <div className="min-w-0 flex-1">
+                            <span className="text-sm font-medium block">{t("payroll.editableBaseSalary") || "Editable Base Salary (For this run)"}</span>
+                            <span className="text-xs text-zinc-500">{t("payroll.defaultsToProrated")}</span>
+                          </div>
+                          <Input
+                            type="number"
+                            step="0.01"
+                            className="w-full sm:w-36 text-left sm:text-right font-bold font-mono h-10 shrink-0"
+                            value={customBaseSalary}
+                            onFocus={(e) => e.target.select()}
+                            onChange={(e) => setCustomBaseSalary(e.target.value)}
+                          />
+                        </div>
+
+                        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 py-2 border-b">
+                          <span className="font-medium text-sm">{t("payroll.addAdditionalBonus") || "Add Additional Bonus (ETB)"}</span>
+                          <Input
+                            type="number"
+                            className="w-full sm:w-36 text-left sm:text-right font-bold text-emerald-700 font-mono h-10 shrink-0"
+                            value={bonus}
+                            onFocus={(e) => e.target.select()}
+                            onChange={(e) => setBonus(Number(e.target.value) || 0)}
+                            min={0}
+                          />
+                        </div>
+                      </div>
+
+                      {/* Active Monthly Loans Breakdown */}
+                      <div className="bg-amber-50/60 p-3.5 sm:p-4 rounded-xl border border-amber-200 space-y-3 min-w-0 overflow-hidden">
+                        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-amber-200/80 pb-2">
+                          <div>
+                            <h4 className="text-xs font-bold uppercase tracking-wider text-amber-950 flex items-center">
+                              <DollarSign className="w-4 h-4 mr-1 text-amber-700 shrink-0" /> {t("payroll.activeEmployeeLoansCount", { count: calcData.openLoans.length })}
+                            </h4>
+                            <p className="text-xs text-amber-800 mt-0.5">
+                              {t("payroll.multiMonthLoansDesc") || "Multi-month long-term loans & salary advances"}
+                            </p>
+                          </div>
+                          <span className="text-xs font-bold text-amber-900 bg-amber-100 px-2.5 py-1 rounded-full border border-amber-300 shrink-0 self-start sm:self-auto">
+                            {t("payroll.totalLoanBalance") || "Total Balance:"} {calcData.loanDeductions.toFixed(2)} ETB
+                          </span>
+                        </div>
+
+                        {calcData.openLoans.length === 0 ? (
+                          <p className="text-xs text-zinc-500 italic">{t("payroll.noActiveLoans")}</p>
+                        ) : (
+                          <div className="space-y-2">
+                            {calcData.openLoans.map((loan) => (
+                              <div key={loan.id} className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs bg-white p-2.5 rounded-lg border border-amber-200">
+                                <div className="min-w-0 flex-1">
+                                  <span className="font-semibold text-zinc-800 block truncate">{t("payroll.staffLoan") || "Staff Loan"}</span>
+                                  <span className="text-zinc-500 block text-[11px] mt-0.5">
+                                    {t("payroll.unpaidBalanceOriginal", { remaining: String(loan.remainingBalance), original: String(loan.totalAmount) })}
+                                  </span>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+
+                        <div className="pt-2 flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-t border-amber-200/80">
+                          <div className="flex items-center">
+                            <input
+                              type="checkbox"
+                              id="deductLoansCheck"
+                              disabled={!calcData.openLoans || calcData.openLoans.length === 0}
+                              checked={deductLoans && calcData.openLoans && calcData.openLoans.length > 0}
+                              onChange={(e) => setDeductLoans(e.target.checked)}
+                              className="mr-2 w-4 h-4 accent-amber-800 rounded border-amber-300 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed shrink-0"
+                            />
+                            <label
+                              htmlFor="deductLoansCheck"
+                              className={`text-xs sm:text-sm font-semibold cursor-pointer ${
+                                calcData.openLoans && calcData.openLoans.length > 0
+                                  ? "text-amber-950"
+                                  : "text-zinc-400 cursor-not-allowed"
+                              }`}
+                            >
+                              {t("payroll.monthlyLoanDeductionThisRun") || "Monthly Loan Deduction for This Run (ETB)"}
+                            </label>
+                          </div>
+                          <Input
+                            type="number"
+                            step="0.01"
+                            min="0"
+                            disabled={!deductLoans || !calcData.openLoans || calcData.openLoans.length === 0}
+                            placeholder="0.00"
+                            className="w-full sm:w-36 text-left sm:text-right font-bold font-mono h-10 text-amber-900 bg-white border-amber-300 disabled:opacity-40 disabled:bg-zinc-100 disabled:cursor-not-allowed shrink-0"
+                            value={calcData.openLoans && calcData.openLoans.length > 0 ? customLoanDeduction : "0"}
+                            onFocus={(e) => e.target.select()}
+                            onChange={(e) => setCustomLoanDeduction(e.target.value)}
+                          />
+                        </div>
+                      </div>
+
+                      {/* Active Penalties Section */}
+                      <div className="bg-rose-50/60 p-3.5 sm:p-4 rounded-xl border border-rose-200 space-y-3 min-w-0 overflow-hidden">
+                        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-rose-200/80 pb-2">
+                          <div>
+                            <h4 className="text-xs font-bold uppercase tracking-wider text-rose-950 flex items-center">
+                              <FileWarning className="w-4 h-4 mr-1 text-rose-700 shrink-0" /> {t("payroll.pendingPenaltiesCount", { count: calcData.undeductedPenalties.length })}
+                            </h4>
+                            <p className="text-xs text-rose-800 mt-0.5">
+                              {t("payroll.penaltiesDesc") || "Fines for broken rules or attendance infractions"}
+                            </p>
+                          </div>
+                          <span className="text-xs font-bold text-rose-900 bg-rose-100 px-2.5 py-1 rounded-full border border-rose-300 shrink-0 self-start sm:self-auto">
+                            {t("payroll.totalFines") || "Total Fines:"} {calcData.penaltyDeductions.toFixed(2)} ETB
+                          </span>
+                        </div>
+
+                        {calcData.undeductedPenalties.length === 0 ? (
+                          <p className="text-xs text-zinc-500 italic">{t("payroll.noPendingPenalties")}</p>
+                        ) : (
+                          <div className="space-y-2">
+                            {calcData.undeductedPenalties.map((p) => (
+                              <div key={p.id} className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs bg-white p-2.5 rounded-lg border border-rose-200">
+                                <div className="min-w-0 flex-1">
+                                  <span className="font-semibold text-zinc-800 block truncate">{p.reason}</span>
+                                  <span className="text-rose-700 font-bold block text-[11px] mt-0.5">
+                                    {t("payroll.finePrefix") || "Fine:"} -{p.amount} ETB
+                                  </span>
+                                </div>
+                                <span className="text-[11px] text-zinc-500 shrink-0">
+                                  {p.date ? formatEthDate(p.date) : ""}
+                                </span>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+
+                        <div className="pt-2 flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-t border-rose-200/80">
+                          <div className="flex items-center">
+                            <input
+                              type="checkbox"
+                              id="deductPenaltiesCheck"
+                              disabled={!calcData.undeductedPenalties || calcData.undeductedPenalties.length === 0}
+                              checked={deductPenalties && calcData.undeductedPenalties && calcData.undeductedPenalties.length > 0}
+                              onChange={(e) => setDeductPenalties(e.target.checked)}
+                              className="mr-2 w-4 h-4 accent-rose-800 rounded border-rose-300 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed shrink-0"
+                            />
+                            <label
+                              htmlFor="deductPenaltiesCheck"
+                              className={`text-xs sm:text-sm font-semibold cursor-pointer ${
+                                calcData.undeductedPenalties && calcData.undeductedPenalties.length > 0
+                                  ? "text-rose-950"
+                                  : "text-zinc-400 cursor-not-allowed"
+                              }`}
+                            >
+                              {t("payroll.deductPenaltiesThisRun") || "Deduct Penalty Fines for This Run (ETB)"}
+                            </label>
+                          </div>
+                          <Input
+                            type="number"
+                            step="0.01"
+                            min="0"
+                            disabled={!deductPenalties || !calcData.undeductedPenalties || calcData.undeductedPenalties.length === 0}
+                            placeholder="0.00"
+                            className="w-full sm:w-36 text-left sm:text-right font-bold font-mono h-10 text-rose-900 bg-white border-rose-300 disabled:opacity-40 disabled:bg-zinc-100 disabled:cursor-not-allowed shrink-0"
+                            value={calcData.undeductedPenalties && calcData.undeductedPenalties.length > 0 ? customPenaltyDeduction : "0"}
+                            onFocus={(e) => e.target.select()}
+                            onChange={(e) => setCustomPenaltyDeduction(e.target.value)}
+                          />
+                        </div>
+                      </div>
+
+                      {/* Totals & Manual Final Net Payout Override */}
+                      <div className="bg-[#FAF7EE] p-3.5 sm:p-4 rounded-xl border border-[#EDE4D5] space-y-3 min-w-0">
+                        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1">
+                          <div>
+                            <span className="text-sm font-bold text-[#2C1B10] block">{t("payroll.calculatedNetPayout")}</span>
+                            <span className="text-xs text-[#8C7361]">{t("payroll.calculatedNetFormula") || "Base + Bonus - Monthly Loan - Penalty"}</span>
+                          </div>
+                          <span className="text-lg font-extrabold text-[#4A2E1B] font-mono">
+                            {calculatedNetPayout.toFixed(2)} ETB
+                          </span>
+                        </div>
+
+                        <div className="pt-2 border-t border-[#EDE4D5] flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                          <div>
+                            <label className="text-sm font-bold text-emerald-950 block">{t("payroll.finalNetPayoutOverride") || "Final Net Payout (Override)"}</label>
+                            <span className="text-xs text-emerald-800 font-medium">{t("payroll.leaveEmptyCalculatedNet")}</span>
+                          </div>
+                          <Input
+                            type="number"
+                            step="0.01"
+                            placeholder={t('payroll.autoPlaceholder')}
+                            className="w-full sm:w-40 text-left sm:text-right font-extrabold font-mono text-emerald-700 bg-white border-emerald-300 text-base h-10 shrink-0"
+                            value={customFinalAmount}
+                            onFocus={(e) => e.target.select()}
+                            onChange={(e) => setCustomFinalAmount(e.target.value)}
+                          />
+                        </div>
+                      </div>
+
+                      {/* Signature Confirmation */}
+                      <div className="flex items-start gap-2.5 p-3 rounded-xl bg-amber-50/70 border border-amber-200/60">
+                        <input
+                          type="checkbox"
+                          id="payrollRunIsSigned"
+                          checked={isSignedPayroll}
+                          onChange={(e) => setIsSignedPayroll(e.target.checked)}
+                          className="mt-0.5 w-4 h-4 rounded text-[#4A2E1B] focus:ring-[#4A2E1B] border-zinc-300"
+                        />
+                        <label htmlFor="payrollRunIsSigned" className="text-xs text-[#2C1B10] cursor-pointer">
+                          <span className="font-bold block">✍️ {t('payroll.signedCheckboxLabel')}</span>
+                          <span className="text-[#8C7361] text-[11px] block">{t('payroll.signedCheckboxDesc')}</span>
+                        </label>
+                      </div>
+
+                      {/* Submit Action */}
+                      <Button
+                        className="w-full bg-[#4A2E1B] text-white hover:bg-[#382314] h-11 text-base font-bold rounded-xl disabled:opacity-50 disabled:cursor-not-allowed"
+                        onClick={handleProcessPayroll}
+                        disabled={isProcessing || isTermPaid}
+                      >
+                        {isTermPaid
+                          ? t("payroll.alreadyPaidForTerm", { month: getEthMonthName(selectedMonth), year: String(selectedYear) })
+                          : isProcessing
+                          ? (t("payroll.processingAndDeducting") || "Processing & Deducting...")
+                          : (t("payroll.confirmAndSavePayroll") || "Confirm & Save Payroll Run")}
+                      </Button>
+                      <p className="text-xs text-center text-zinc-400">
+                        {t("payroll.payrollSaveNote")}
+                      </p>
+                    </div>
+                  </div>
+                );
+              })()
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* HISTORY TAB */}
+      {activeTab === "HISTORY" && (
+        <div className="bg-white rounded-2xl border border-[#EDE4D5] shadow-xs overflow-hidden">
+          {/* Mobile Touch Cards */}
+          <div className="block md:hidden p-4 space-y-3">
+            {isLoadingHistory ? (
+              <div className="space-y-3">
+                {[1, 2, 3].map((i) => (
+                  <div key={i} className="bg-[#FAF6F0] rounded-xl p-4 border border-[#EDE4D5] space-y-3 shadow-2xs">
+                    <div className="flex justify-between items-start">
+                      <Skeleton className="h-5 w-32" />
+                      <Skeleton className="h-5 w-20 rounded-full" />
+                    </div>
+                    <div className="grid grid-cols-2 gap-2 pt-1">
+                      <Skeleton className="h-4 w-20" />
+                      <Skeleton className="h-4 w-20" />
+                      <Skeleton className="h-4 w-20" />
+                      <Skeleton className="h-4 w-20" />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : history.length === 0 ? (
+              <div className="text-center py-8 text-[#8C7361] font-medium text-sm">
+                {t("payroll.noRecordsFound") || "No payroll execution records found."}
+              </div>
+            ) : (
+              history.map((r) => (
+                <div
+                  key={r.id}
+                  className="bg-[#FAF6F0] rounded-xl p-4 border border-[#EDE4D5] space-y-3 shadow-2xs"
+                >
+                  <div className="flex justify-between items-start">
+                    <div>
+                      <span className="font-extrabold text-base text-[#2C1B10]">
+                        {getEthMonthName(r.month)} {r.year}
+                      </span>
+                      <p className="text-xs text-[#8C7361] mt-0.5">
+                        {r.user?.fullName}{" "}
+                        <span className="font-semibold text-zinc-600">({r.user?.role})</span>
+                      </p>
+                    </div>
+                    <span className="text-sm font-extrabold text-emerald-700 bg-emerald-50 border border-emerald-200 px-2.5 py-1 rounded-lg">
+                      {r.finalAmount} ETB
+                    </span>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-2 text-xs bg-white p-2.5 rounded-lg border border-[#EDE4D5]">
+                    <div>
+                      <span className="text-[#8C7361] block">{t("payroll.colBaseSalary")}:</span>
+                      <span className="font-bold text-[#2C1B10]">{r.baseSalary} ETB</span>
+                    </div>
+                    <div>
+                      <span className="text-[#8C7361] block">Bonus:</span>
+                      <span className="font-bold text-emerald-700">
+                        {r.bonus > 0 ? `+${r.bonus} ETB` : "—"}
+                      </span>
+                    </div>
+                    <div>
+                      <span className="text-[#8C7361] block">Deductions:</span>
+                      <span className="font-bold text-rose-700">
+                        -{Number(r.loanDeductions) + Number(r.penaltyDeductions)} ETB
+                      </span>
+                    </div>
+                    <div>
+                      <span className="text-[#8C7361] block">{t("payroll.executionDate")}:</span>
+                      <span className="font-semibold text-zinc-700">
+                        {r.paymentDate
+                          ? format(new Date(r.paymentDate), "MMM dd, yyyy")
+                          : "N/A"}
+                      </span>
+                    </div>
+                  </div>
+
+                  {(user?.role === "OWNER" || user?.role === "ADMIN") && (
+                    <div className="pt-1 flex justify-end">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => {
+                          setEditingPayroll(r);
+                          setIsEditPayrollOpen(true);
+                        }}
+                        className="w-full sm:w-auto h-10 border-[#EDE4D5] text-[#4A2E1B] font-bold text-xs hover:bg-[#FAF6F0]"
+                      >
+                        <Edit2 className="w-3.5 h-3.5 mr-1 text-[#E87A18]" /> Edit Payroll Record
+                      </Button>
+                    </div>
+                  )}
+                </div>
+              ))
+            )}
+          </div>
+
+          {/* Desktop Table */}
+          <div className="hidden md:block">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>{t("payroll.term") || "Payroll Term"}</TableHead>
+                  <TableHead>{t("common.employee") || "Employee"}</TableHead>
+                  <TableHead>{t("payroll.baseSalary") || "Base Salary"}</TableHead>
+                  <TableHead>{t("common.bonus") || "Bonus"}</TableHead>
+                  <TableHead className="text-rose-700">{t("payroll.deductions") || "Deductions"}</TableHead>
+                  <TableHead className="text-emerald-700">{t("payroll.finalSalaryPaid")}</TableHead>
+                  <TableHead>{t("payroll.executionDate")}</TableHead>
+                  {(user?.role === "OWNER" || user?.role === "ADMIN") && <TableHead className="text-right pr-6">{t("common.actions") || "Actions"}</TableHead>}
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {isLoadingHistory ? (
+                  Array.from({ length: 5 }).map((_, idx) => (
+                    <TableRow key={idx}>
+                      <TableCell><Skeleton className="h-4 w-28 mb-1" /><Skeleton className="h-3 w-16" /></TableCell>
+                      <TableCell><Skeleton className="h-4 w-20" /></TableCell>
+                      <TableCell><Skeleton className="h-4 w-20" /></TableCell>
+                      <TableCell><Skeleton className="h-4 w-20" /></TableCell>
+                      <TableCell><Skeleton className="h-4 w-20" /></TableCell>
+                      <TableCell><Skeleton className="h-4 w-24" /></TableCell>
+                      <TableCell><Skeleton className="h-4 w-20" /></TableCell>
+                      {(user?.role === "OWNER" || user?.role === "ADMIN") && (
+                        <TableCell className="text-right pr-6"><Skeleton className="h-8 w-16 ml-auto rounded-xl" /></TableCell>
+                      )}
+                    </TableRow>
+                  ))
+                ) : history.length === 0 ? (
+                  <TableRow>
+                    <TableCell colSpan={8} className="text-center py-8 text-[#8C7361] font-medium">
+                      {t("payroll.noRecordsFound") || "No payroll execution records found."}
+                    </TableCell>
+                  </TableRow>
+                ) : (
+                  history.map((r) => (
+                    <TableRow key={r.id}>
+                      <TableCell className="font-extrabold text-[#2C1B10]">
+                        {getEthMonthName(r.month)} {r.year}
+                      </TableCell>
+                      <TableCell>
+                        <span className="font-bold text-[#2C1B10]">{r.user?.fullName}</span>{" "}
+                        <span className="text-xs text-[#8C7361] font-semibold">
+                          ({r.user?.role})
+                        </span>
+                      </TableCell>
+                      <TableCell className="font-semibold text-[#2C1B10]">
+                        {r.baseSalary} ETB
+                      </TableCell>
+                      <TableCell className="text-emerald-700 font-bold">
+                        {r.bonus > 0 ? (
+                          <Badge
+                            variant="secondary"
+                            className="shrink-0 text-[10px] font-bold bg-emerald-100 text-emerald-800 border-emerald-200"
+                          >
+                            +{r.bonus} ETB
+                          </Badge>
+                        ) : "—"}
+                      </TableCell>
+                      <TableCell className="text-rose-700 font-bold">
+                        -{Number(r.loanDeductions) + Number(r.penaltyDeductions)}{" "}
+                        ETB
+                      </TableCell>
+                      <TableCell className="font-extrabold text-emerald-700 text-sm">
+                        {r.finalAmount} ETB
+                      </TableCell>
+                      <TableCell className="text-xs font-semibold text-[#8C7361]">
+                        {r.paymentDate
+                          ? format(new Date(r.paymentDate), "MMM dd, yyyy · HH:mm")
+                          : "N/A"}
+                      </TableCell>
+                      {(user?.role === "OWNER" || user?.role === "ADMIN") && (
+                        <TableCell className="text-right pr-6">
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => {
+                              setEditingPayroll(r);
+                              setIsEditPayrollOpen(true);
+                            }}
+                            className="font-bold text-xs text-blue-700 hover:text-blue-800 hover:bg-blue-50"
+                          >
+                            <Edit2 className="w-3.5 h-3.5 mr-1" /> {t("common.edit")}
+                          </Button>
+                        </TableCell>
+                      )}
+                    </TableRow>
+                  ))
+                )}
+              </TableBody>
+            </Table>
+          </div>
+        </div>
+      )}
+
+      {/* LOANS TAB */}
+      {activeTab === "LOANS" && (
+        <div className="bg-white rounded-2xl border border-[#EDE4D5] shadow-xs overflow-hidden">
+          <div className="p-4 border-b border-[#EDE4D5] flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 bg-[#FAF6F0]">
+            <div>
+              <h2 className="font-extrabold text-sm text-[#2C1B10] uppercase tracking-wider">{t("payroll.activeEmployeeLoans")}</h2>
+              <p className="text-xs text-[#8C7361] mt-0.5">{t("payroll.activeEmployeeLoansDesc")}</p>
+            </div>
+            <Button onClick={() => setIsLoanOpen(true)} size="sm">
+              <Plus className="w-4 h-4 mr-1.5" /> {t("payroll.dispatchLoan") || "Dispatch Loan"}
+            </Button>
+          </div>
+
+          {/* Mobile Touch Cards for Loans */}
+          <div className="block md:hidden p-4 space-y-3">
+            {isLoadingLoans ? (
+              <div className="space-y-3">
+                {[1, 2, 3].map((i) => (
+                  <div key={i} className="bg-[#FAF6F0] rounded-xl p-4 border border-[#EDE4D5] space-y-3 shadow-2xs">
+                    <div className="flex justify-between items-start">
+                      <Skeleton className="h-5 w-32" />
+                      <Skeleton className="h-5 w-20 rounded-full" />
+                    </div>
+                    <div className="grid grid-cols-2 gap-2 pt-1">
+                      <Skeleton className="h-4 w-24" />
+                      <Skeleton className="h-4 w-24" />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : loans.length === 0 ? (
+              <div className="text-center py-8 text-[#8C7361] font-medium text-sm">
+                {t("payroll.noLoansRecorded") || "No employee loans currently recorded."}
+              </div>
+            ) : (
+              loans.map((l) => (
+                <div
+                  key={l.id}
+                  className="bg-[#FAF6F0] rounded-xl p-4 border border-[#EDE4D5] space-y-3 shadow-2xs"
+                >
+                  <div className="flex justify-between items-start">
+                    <div>
+                      <span className="font-extrabold text-base text-[#2C1B10]">
+                        {l.user?.fullName}
+                      </span>
+                      <p className="text-xs text-[#8C7361] mt-0.5">
+                        {t("payroll.issuedPrefix") || "Issued:"} {formatEthDate(l.date || l.createdAt)}
+                      </p>
+                    </div>
+                    <Badge
+                      className={`font-bold text-[10px] ${
+                        l.status === "PAID"
+                          ? "bg-emerald-100 text-emerald-800 border-emerald-300"
+                          : "bg-amber-100 text-amber-900 border-amber-300"
+                      }`}
+                    >
+                      {l.status === "PAID" ? `✓ ${t("payroll.statusFullyPaid")}` : `⏳ ${t("payroll.statusOpen")}`}
+                    </Badge>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-2 text-xs bg-white p-2.5 rounded-lg border border-[#EDE4D5]">
+                    <div>
+                      <span className="text-[#8C7361] block">{t("payroll.originalAmount")}:</span>
+                      <span className="font-bold text-[#2C1B10]">{l.totalAmount} ETB</span>
+                    </div>
+                    <div>
+                      <span className="text-[#8C7361] block">{t("payroll.remainingBalance")}:</span>
+                      <span className="font-extrabold text-rose-700">{l.remainingBalance} ETB</span>
+                    </div>
+                  </div>
+
+                  {(user?.role === "OWNER" || user?.role === "ADMIN") && (
+                    <div className="pt-1 flex justify-end">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => {
+                          setEditingLoan(l);
+                          setIsEditLoanOpen(true);
+                        }}
+                        className="w-full sm:w-auto h-10 border-[#EDE4D5] text-[#4A2E1B] font-bold text-xs hover:bg-[#FAF6F0]"
+                      >
+                        <Edit2 className="w-3.5 h-3.5 mr-1 text-[#E87A18]" /> {t("payroll.editLoan") || "Edit Loan"}
+                      </Button>
+                    </div>
+                  )}
+                </div>
+              ))
+            )}
+          </div>
+
+          {/* Desktop Table for Loans */}
+          <div className="hidden md:block">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>{t("common.date")}</TableHead>
+                  <TableHead>{t("common.employee")}</TableHead>
+                  <TableHead>{t("payroll.originalAmount")}</TableHead>
+                  <TableHead>{t("payroll.remainingBalance")}</TableHead>
+                  <TableHead>{t("payroll.loanStatus")}</TableHead>
+                  {(user?.role === "OWNER" || user?.role === "ADMIN") && <TableHead className="text-right pr-6">{t("common.actions") || "Actions"}</TableHead>}
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {isLoadingLoans ? (
+                  Array.from({ length: 5 }).map((_, idx) => (
+                    <TableRow key={idx}>
+                      <TableCell><Skeleton className="h-4 w-28 mb-1" /><Skeleton className="h-3 w-16" /></TableCell>
+                      <TableCell><Skeleton className="h-5 w-24 rounded-full" /></TableCell>
+                      <TableCell><Skeleton className="h-4 w-20" /></TableCell>
+                      <TableCell><Skeleton className="h-4 w-20" /></TableCell>
+                      <TableCell><Skeleton className="h-5 w-20 rounded-full" /></TableCell>
+                      {(user?.role === "OWNER" || user?.role === "ADMIN") && (
+                        <TableCell className="text-right pr-6"><Skeleton className="h-8 w-16 ml-auto rounded-xl" /></TableCell>
+                      )}
+                    </TableRow>
+                  ))
+                ) : loans.length === 0 ? (
+                  <TableRow>
+                    <TableCell colSpan={6} className="text-center py-8 text-[#8C7361] font-medium">
+                      {t("payroll.noLoansRecorded") || "No employee loans currently recorded."}
+                    </TableCell>
+                  </TableRow>
+                ) : (
+                  loans.map((l) => (
+                    <TableRow key={l.id}>
+                      <TableCell className="text-xs font-semibold text-[#8C7361]">
+                        {formatEthDate(l.date || l.createdAt)}
+                      </TableCell>
+                      <TableCell className="font-bold text-[#2C1B10]">
+                        {l.user?.fullName}
+                      </TableCell>
+                      <TableCell className="font-semibold text-[#8C7361]">{l.totalAmount} ETB</TableCell>
+                      <TableCell className="font-extrabold text-[#2C1B10]">
+                        {l.remainingBalance} ETB
+                      </TableCell>
+                      <TableCell>
+                        <Badge
+                          className={`font-bold text-xs ${
+                            l.status === "PAID"
+                              ? "bg-emerald-100 text-emerald-800 border-emerald-300"
+                              : "bg-amber-100 text-amber-900 border-amber-300"
+                          }`}
+                        >
+                          {l.status === "PAID" ? "✓ FULLY PAID" : "⏳ OPEN BALANCE"}
+                        </Badge>
+                      </TableCell>
+                      {(user?.role === "OWNER" || user?.role === "ADMIN") && (
+                        <TableCell className="text-right pr-6">
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => {
+                              setEditingLoan(l);
+                              setIsEditLoanOpen(true);
+                            }}
+                            className="font-bold text-xs text-blue-700 hover:text-blue-800 hover:bg-blue-50"
+                          >
+                            <Edit2 className="w-3.5 h-3.5 mr-1" /> {t("common.edit")}
+                          </Button>
+                        </TableCell>
+                      )}
+                    </TableRow>
+                  ))
+                )}
+              </TableBody>
+            </Table>
+          </div>
+        </div>
+      )}
+
+      {/* PENALTIES TAB */}
+      {activeTab === "PENALTIES" && (
+        <div className="bg-white rounded-2xl border border-[#EDE4D5] shadow-xs overflow-hidden">
+          <div className="p-4 border-b border-[#EDE4D5] flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 bg-[#FAF6F0]">
+            <div>
+              <h2 className="font-extrabold text-sm text-[#2C1B10] uppercase tracking-wider">{t("payroll.workforcePenalties")}</h2>
+              <p className="text-xs text-[#8C7361] mt-0.5">{t("payroll.workforcePenaltiesDesc")}</p>
+            </div>
+            <Button onClick={() => setIsPenaltyOpen(true)} size="sm">
+              <Plus className="w-4 h-4 mr-1.5" /> {t("payroll.logPenalty") || "Log Penalty"}
+            </Button>
+          </div>
+
+          {/* Mobile Touch Cards for Penalties */}
+          <div className="block md:hidden p-4 space-y-3">
+            {isLoadingPenalties ? (
+              <div className="space-y-3">
+                {[1, 2, 3].map((i) => (
+                  <div key={i} className="bg-[#FAF6F0] rounded-xl p-4 border border-[#EDE4D5] space-y-3 shadow-2xs">
+                    <div className="flex justify-between items-start">
+                      <Skeleton className="h-5 w-32" />
+                      <Skeleton className="h-5 w-20" />
+                    </div>
+                    <div className="space-y-1.5">
+                      <Skeleton className="h-4 w-40" />
+                      <Skeleton className="h-4 w-24" />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : penalties.length === 0 ? (
+              <div className="text-center py-8 text-[#8C7361] font-medium text-sm">
+                {t("payroll.noPenaltiesLogged") || "No active penalties logged."}
+              </div>
+            ) : (
+              penalties.map((p) => (
+                <div
+                  key={p.id}
+                  className="bg-[#FAF6F0] rounded-xl p-4 border border-[#EDE4D5] space-y-3 shadow-2xs"
+                >
+                  <div className="flex justify-between items-start">
+                    <div>
+                      <span className="font-extrabold text-base text-[#2C1B10]">
+                        {p.user?.fullName}
+                      </span>
+                      <p className="text-xs text-[#8C7361] mt-0.5">
+                        Date: {format(new Date(p.date), "MMM dd, yyyy")}
+                      </p>
+                    </div>
+                    <Badge
+                      className={`font-bold text-[10px] ${
+                        p.isDeducted
+                          ? "bg-emerald-100 text-emerald-800 border-emerald-300"
+                          : "bg-rose-100 text-rose-800 border-rose-300"
+                      }`}
+                    >
+                      {p.isDeducted ? `✓ ${t("payroll.statusSettled")}` : `⚠ ${t("payroll.statusPending")}`}
+                    </Badge>
+                  </div>
+
+                  <div className="bg-white p-2.5 rounded-lg border border-[#EDE4D5] space-y-1.5 text-xs">
+                    <div className="flex justify-between items-center">
+                      <span className="text-[#8C7361]">{t("payroll.fineAmount")}:</span>
+                      <span className="font-extrabold text-rose-700">-{p.amount} ETB</span>
+                    </div>
+                    <div>
+                      <span className="text-[#8C7361] block">{t("common.reason")}:</span>
+                      <span className="font-medium text-[#2C1B10]">{p.reason}</span>
+                    </div>
+                  </div>
+
+                  {(user?.role === "OWNER" || user?.role === "ADMIN") && (
+                    <div className="pt-1 flex justify-end">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => {
+                          setEditingPenalty(p);
+                          setIsEditPenaltyOpen(true);
+                        }}
+                        className="w-full sm:w-auto h-10 border-[#EDE4D5] text-[#4A2E1B] font-bold text-xs hover:bg-[#FAF6F0]"
+                      >
+                        <Edit2 className="w-3.5 h-3.5 mr-1 text-[#E87A18]" /> {t("payroll.editPenaltyAction") || "Edit Penalty"}
+                      </Button>
+                    </div>
+                  )}
+                </div>
+              ))
+            )}
+          </div>
+
+          {/* Desktop Table for Penalties */}
+          <div className="hidden md:block">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>{t("common.date")}</TableHead>
+                  <TableHead>{t("common.employee")}</TableHead>
+                  <TableHead>{t("payroll.violationReason")}</TableHead>
+                  <TableHead className="text-rose-700">{t("payroll.penaltyFine")}</TableHead>
+                  <TableHead>{t("payroll.deductionStatus")}</TableHead>
+                  {(user?.role === "OWNER" || user?.role === "ADMIN") && <TableHead className="text-right pr-6">{t("common.actions") || "Actions"}</TableHead>}
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {isLoadingPenalties ? (
+                  Array.from({ length: 5 }).map((_, idx) => (
+                    <TableRow key={idx}>
+                      <TableCell><Skeleton className="h-4 w-28 mb-1" /><Skeleton className="h-3 w-16" /></TableCell>
+                      <TableCell><Skeleton className="h-4 w-24" /></TableCell>
+                      <TableCell><Skeleton className="h-4 w-32" /></TableCell>
+                      <TableCell><Skeleton className="h-4 w-20" /></TableCell>
+                      <TableCell><Skeleton className="h-5 w-20 rounded-full" /></TableCell>
+                      {(user?.role === "OWNER" || user?.role === "ADMIN") && (
+                        <TableCell className="text-right pr-6"><Skeleton className="h-8 w-16 ml-auto rounded-xl" /></TableCell>
+                      )}
+                    </TableRow>
+                  ))
+                ) : penalties.length === 0 ? (
+                  <TableRow>
+                    <TableCell colSpan={6} className="text-center py-8 text-[#8C7361] font-medium">
+                      {t("payroll.noPenaltiesLogged") || "No active penalties logged."}
+                    </TableCell>
+                  </TableRow>
+                ) : (
+                  penalties.map((p) => (
+                    <TableRow key={p.id}>
+                      <TableCell className="text-xs font-semibold text-[#8C7361]">
+                        {format(new Date(p.date), "MMM dd, yyyy")}
+                      </TableCell>
+                      <TableCell className="font-bold text-[#2C1B10]">
+                        {p.user?.fullName}
+                      </TableCell>
+                      <TableCell className="text-xs text-[#8C7361] max-w-[220px] truncate" title={p.reason}>{p.reason}</TableCell>
+                      <TableCell className="font-extrabold text-rose-700">
+                        -{p.amount} ETB
+                      </TableCell>
+                      <TableCell>
+                        <Badge
+                          className={`font-bold text-xs ${
+                            p.isDeducted
+                              ? "bg-emerald-100 text-emerald-800 border-emerald-300"
+                              : "bg-rose-100 text-rose-800 border-rose-300"
+                          }`}
+                        >
+                          {p.isDeducted ? "✓ DEDUCTED / SETTLED" : "⚠ PENDING DEDUCTION"}
+                        </Badge>
+                      </TableCell>
+                      {(user?.role === "OWNER" || user?.role === "ADMIN") && (
+                        <TableCell className="text-right pr-6">
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => {
+                              setEditingPenalty(p);
+                              setIsEditPenaltyOpen(true);
+                            }}
+                            className="font-bold text-xs text-blue-700 hover:text-blue-800 hover:bg-blue-50"
+                          >
+                            <Edit2 className="w-3.5 h-3.5 mr-1" /> {t("common.edit")}
+                          </Button>
+                        </TableCell>
+                      )}
+                    </TableRow>
+                  ))
+                )}
+              </TableBody>
+            </Table>
+          </div>
+        </div>
+      )}
+
+      {/* CREATE LOAN DIALOG */}
+      <Dialog open={isLoanOpen} onOpenChange={setIsLoanOpen}>
+        <DialogContent className="max-w-md">
+          <form onSubmit={handleAddLoan}>
+            <DialogHeader>
+              <DialogTitle className="text-lg font-bold text-[#2C1B10]">{t("payroll.dispatchMicroLoan")}</DialogTitle>
+            </DialogHeader>
+            <div className="space-y-4 py-4">
+              <div>
+                <label className="text-sm font-semibold text-[#2C1B10] mb-1 block">{t("payroll.receivingEmployee")}</label>
+                <select name="userId" required className="w-full h-11 border border-[#EDE4D5] rounded-xl px-3 text-sm bg-white">
+                  <option value="">{t("payroll.selectTarget")}</option>
+                  {users.map((u) => (
+                    <option key={u.id} value={u.id}>
+                      {u.fullName}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="text-sm font-semibold text-[#2C1B10] mb-1 block">{t('payroll.loanPackageAmount') || 'Loan Package Amount (ETB)'}</label>
+                <Input
+                  name="amount"
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  placeholder="0.00"
+                  className="h-11 rounded-xl"
+                  onFocus={(e) => e.target.select()}
+                  required
+                />
+              </div>
+              <div>
+                <label className="text-sm font-semibold text-[#2C1B10] mb-1 block">{t("common.date")}</label>
+                <AppDatePicker
+                  name="date"
+                  defaultValue={format(new Date(), "yyyy-MM-dd")}
+                  required
+                />
+              </div>
+              <div className="flex items-start gap-2.5 p-3 rounded-xl bg-amber-50/70 border border-amber-200/60">
+                <input
+                  type="checkbox"
+                  name="isSigned"
+                  id="payrollPageLoanIsSigned"
+                  defaultChecked
+                  className="mt-0.5 w-4 h-4 rounded text-[#4A2E1B] focus:ring-[#4A2E1B] border-zinc-300"
+                />
+                <label htmlFor="payrollPageLoanIsSigned" className="text-xs text-[#2C1B10] cursor-pointer">
+                  <span className="font-bold block">✍️ {t('payroll.signedCheckboxLabel')}</span>
+                  <span className="text-[#8C7361] text-[11px] block">{t('payroll.signedCheckboxDesc')}</span>
+                </label>
+              </div>
+            </div>
+            <DialogFooter className="flex flex-col sm:flex-row gap-2 w-full pt-2 sm:pt-4">
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => setIsLoanOpen(false)}
+                className="order-2 sm:order-1 w-full sm:w-auto h-11 sm:h-10 border-[#EDE4D5] rounded-xl"
+              >
+                {t('common.cancel') || 'Cancel'}
+              </Button>
+              <Button
+                type="submit"
+                size="lg"
+                loading={isSubmitting}
+                loadingText="Dispersing..."
+                className="order-1 sm:order-2 w-full sm:w-auto"
+              >
+                {t("payroll.vaultAndDisperse") || "Vault & Disperse"}
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+
+      {/* EDIT LOAN DIALOG */}
+      <Dialog open={isEditLoanOpen} onOpenChange={setIsEditLoanOpen}>
+        <DialogContent className="max-w-md">
+          <form onSubmit={handleUpdateLoan}>
+            <DialogHeader>
+              <DialogTitle className="text-lg font-bold text-[#2C1B10]">{t("payroll.editEmployeeLoan")}</DialogTitle>
+              <DialogDescription>{t("payroll.editEmployeeLoanDesc")}</DialogDescription>
+            </DialogHeader>
+            {editingLoan && (
+              <div className="space-y-4 py-4">
+                <div className="p-3 bg-[#FAF6F0] rounded-xl text-xs space-y-1 border border-[#EDE4D5]">
+                  <p><strong>{t("common.employee")}:</strong> {editingLoan.user?.fullName}</p>
+                  <p><strong>{t("payroll.issuedPrefix") || "Issued:"}</strong> {format(new Date(editingLoan.createdAt), "PPP")}</p>
+                </div>
+                <div>
+                  <label className="text-sm font-semibold text-[#2C1B10] mb-1 block">{t("payroll.totalOriginalLoanAmount") || "Total Original Loan Amount (ETB)"}</label>
+                  <Input
+                    name="totalAmount"
+                    type="number"
+                    step="0.01"
+                    defaultValue={editingLoan.totalAmount}
+                    className="h-11 rounded-xl"
+                    onFocus={(e) => e.target.select()}
+                    required
+                  />
+                </div>
+                <div>
+                  <label className="text-sm font-semibold text-[#2C1B10] mb-1 block">{t("payroll.remainingUnpaidBalance") || "Remaining Unpaid Balance (ETB)"}</label>
+                  <Input
+                    name="remainingBalance"
+                    type="number"
+                    step="0.01"
+                    defaultValue={editingLoan.remainingBalance}
+                    className="h-11 rounded-xl"
+                    onFocus={(e) => e.target.select()}
+                    required
+                  />
+                </div>
+                <div>
+                  <label className="text-sm font-semibold text-[#2C1B10] mb-1 block">{t("common.date")}</label>
+                  <AppDatePicker
+                    name="date"
+                    defaultValue={((editingLoan as any).date || editingLoan.createdAt || "").split("T")[0]}
+                    required
+                  />
+                </div>
+                <div>
+                  <label className="text-sm font-semibold text-[#2C1B10] mb-1 block">{t("payroll.loanStatus")}</label>
+                  <select name="status" defaultValue={editingLoan.status} className="w-full h-11 border border-[#EDE4D5] rounded-xl px-3 text-sm bg-white">
+                    <option value="OPEN">{t('payroll.statusOpenActive') || 'OPEN (Active Unpaid Loan)'}</option>
+                    <option value="PAID">{t('payroll.statusPaidSettled') || 'PAID (Fully Settled)'}</option>
+                  </select>
+                </div>
+              </div>
+            )}
+            <DialogFooter className="flex flex-col sm:flex-row gap-2 w-full pt-2 sm:pt-4">
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => setIsEditLoanOpen(false)}
+                className="order-2 sm:order-1 w-full sm:w-auto h-11 sm:h-10 border-[#EDE4D5] rounded-xl"
+              >
+                {t('common.cancel') || 'Cancel'}
+              </Button>
+              <Button
+                type="submit"
+                disabled={isSubmitting}
+                className="order-1 sm:order-2 w-full sm:w-auto h-11 sm:h-10 bg-[#4A2E1B] hover:bg-[#382314] text-white font-bold rounded-xl"
+              >
+                {isSubmitting ? (t("common.saving") || "Saving...") : (t("payroll.saveLoanChanges") || "Save Loan Changes")}
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+
+      {/* CREATE PENALTY DIALOG */}
+      <Dialog open={isPenaltyOpen} onOpenChange={setIsPenaltyOpen}>
+        <DialogContent className="max-w-md">
+          <form onSubmit={handleAddPenalty}>
+            <DialogHeader>
+              <DialogTitle className="text-lg font-bold text-[#2C1B10]">{t("payroll.enforcePenalty")}</DialogTitle>
+            </DialogHeader>
+            <div className="space-y-4 py-4">
+              <div>
+                <label className="text-sm font-semibold text-[#2C1B10] mb-1 block">{t("payroll.infractingEmployee")}</label>
+                <select name="userId" required className="w-full h-11 border border-[#EDE4D5] rounded-xl px-3 text-sm bg-white">
+                  <option value="">{t("payroll.selectTarget")}</option>
+                  {users.map((u) => (
+                    <option key={u.id} value={u.id}>
+                      {u.fullName}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="text-sm font-semibold text-[#2C1B10] mb-1 block">{t("payroll.fineEvaluation") || "Fine Evaluation (ETB)"}</label>
+                <Input
+                  name="amount"
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  placeholder="0.00"
+                  className="h-11 rounded-xl"
+                  onFocus={(e) => e.target.select()}
+                  required
+                />
+              </div>
+              <div>
+                <label className="text-sm font-semibold text-[#2C1B10] mb-1 block">{t("payroll.ruleBroken")}</label>
+                <Input
+                  name="reason"
+                  placeholder={t('payroll.penaltyReasonPlaceholder')}
+                  className="h-11 rounded-xl"
+                  required
+                />
+              </div>
+              <div>
+                <label className="text-sm font-semibold text-[#2C1B10] mb-1 block">{t("payroll.dateOfOffense")}</label>
+                <EthDatePicker name="date" />
+              </div>
+              <div className="flex items-start gap-2.5 p-3 rounded-xl bg-amber-50/70 border border-amber-200/60">
+                <input
+                  type="checkbox"
+                  name="isSigned"
+                  id="payrollPagePenaltyIsSigned"
+                  defaultChecked
+                  className="mt-0.5 w-4 h-4 rounded text-[#4A2E1B] focus:ring-[#4A2E1B] border-zinc-300"
+                />
+                <label htmlFor="payrollPagePenaltyIsSigned" className="text-xs text-[#2C1B10] cursor-pointer">
+                  <span className="font-bold block">✍️ {t('payroll.signedCheckboxLabel')}</span>
+                  <span className="text-[#8C7361] text-[11px] block">{t('payroll.signedCheckboxDesc')}</span>
+                </label>
+              </div>
+            </div>
+            <DialogFooter className="flex flex-col sm:flex-row gap-2 w-full pt-2 sm:pt-4">
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => setIsPenaltyOpen(false)}
+                className="order-2 sm:order-1 w-full sm:w-auto h-11 sm:h-10 border-[#EDE4D5] rounded-xl"
+              >
+                {t('common.cancel') || 'Cancel'}
+              </Button>
+              <Button
+                type="submit"
+                variant="destructive"
+                disabled={isSubmitting}
+                className="order-1 sm:order-2 w-full sm:w-auto h-11 sm:h-10 font-bold rounded-xl"
+              >
+                {isSubmitting ? (t("common.loading") || "Submitting...") : (t("payroll.submitFine") || "Submit Fine")}
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+
+      {/* EDIT PENALTY DIALOG */}
+      <Dialog open={isEditPenaltyOpen} onOpenChange={setIsEditPenaltyOpen}>
+        <DialogContent className="max-w-md">
+          <form onSubmit={handleUpdatePenalty}>
+            <DialogHeader>
+              <DialogTitle className="text-lg font-bold text-[#2C1B10]">{t("payroll.editPenalty")}</DialogTitle>
+              <DialogDescription>{t("payroll.editPenaltyDesc")}</DialogDescription>
+            </DialogHeader>
+            {editingPenalty && (
+              <div className="space-y-4 py-4">
+                <div className="p-3 bg-[#FAF6F0] rounded-xl text-xs space-y-1 border border-[#EDE4D5]">
+                  <p><strong>{t("common.employee")}:</strong> {editingPenalty.user?.fullName}</p>
+                </div>
+                <div>
+                  <label className="text-sm font-semibold text-[#2C1B10] mb-1 block">{t("payroll.fineAmount") || "Fine Amount (ETB)"}</label>
+                  <Input
+                    name="amount"
+                    type="number"
+                    step="0.01"
+                    defaultValue={editingPenalty.amount}
+                    className="h-11 rounded-xl"
+                    onFocus={(e) => e.target.select()}
+                    required
+                  />
+                </div>
+                <div>
+                  <label className="text-sm font-semibold text-[#2C1B10] mb-1 block">{t("payroll.ruleBroken")}</label>
+                  <Input
+                    name="reason"
+                    defaultValue={editingPenalty.reason}
+                    className="h-11 rounded-xl"
+                    required
+                  />
+                </div>
+                <div>
+                  <label className="text-sm font-semibold text-[#2C1B10] mb-1 block">{t("payroll.dateOfOffense")}</label>
+                  <EthDatePicker name="date" defaultValue={editingPenalty.date ? editingPenalty.date.split("T")[0] : ""} />
+                </div>
+                <div>
+                  <label className="text-sm font-semibold text-[#2C1B10] mb-1 block">{t('payroll.settlementStatus') || 'Settlement Status'}</label>
+                  <select name="isDeducted" defaultValue={editingPenalty.isDeducted ? "true" : "false"} className="w-full h-11 border border-[#EDE4D5] rounded-xl px-3 text-sm bg-white">
+                    <option value="false">{t('payroll.pendingNotDeducted') || 'Pending (Not yet deducted from salary)'}</option>
+                    <option value="true">{t("payroll.deductedSettled")}</option>
+                  </select>
+                </div>
+              </div>
+            )}
+            <DialogFooter className="flex flex-col sm:flex-row gap-2 w-full pt-2 sm:pt-4">
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => setIsEditPenaltyOpen(false)}
+                className="order-2 sm:order-1 w-full sm:w-auto h-11 sm:h-10 border-[#EDE4D5] rounded-xl"
+              >
+                {t('common.cancel') || 'Cancel'}
+              </Button>
+              <Button
+                type="submit"
+                disabled={isSubmitting}
+                className="order-1 sm:order-2 w-full sm:w-auto h-11 sm:h-10 bg-[#4A2E1B] hover:bg-[#382314] text-white font-bold rounded-xl"
+              >
+                {isSubmitting ? (t('common.saving') || 'Saving...') : (t('payroll.savePenaltyChanges') || 'Save Penalty Changes')}
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+
+      {/* EDIT PAYROLL RECORD DIALOG */}
+      <Dialog open={isEditPayrollOpen} onOpenChange={setIsEditPayrollOpen}>
+        <DialogContent className="sm:max-w-[500px]">
+          <form onSubmit={handleUpdatePayroll}>
+            <DialogHeader>
+              <DialogTitle className="text-lg font-bold text-[#2C1B10]">{t('payroll.editPayrollTitle') || 'Edit Payroll Record & Final Salary'}</DialogTitle>
+              <DialogDescription>
+                {t('payroll.editPayrollDesc')}
+              </DialogDescription>
+            </DialogHeader>
+            {editingPayroll && (
+              <div className="grid gap-4 py-4">
+                <div className="p-3 bg-[#FAF7EE] border border-[#EDE4D5] rounded-xl text-xs space-y-1">
+                  <p className="font-bold text-[#2C1B10]">
+                    {editingPayroll.user?.fullName} — {getEthMonthName(editingPayroll.month)} {editingPayroll.year}
+                  </p>
+                </div>
+
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="text-xs font-semibold text-zinc-700 mb-1 block">{t('payroll.colBaseSalary')} (ETB)</label>
+                    <Input
+                      name="baseSalary"
+                      type="number"
+                      step="0.01"
+                      defaultValue={editingPayroll.baseSalary}
+                      className="h-11 rounded-xl"
+                      onFocus={(e) => e.target.select()}
+                      required
+                    />
+                  </div>
+                  <div>
+                    <label className="text-xs font-semibold text-emerald-700 mb-1 block">{t('payroll.colBonuses')} (+ ETB)</label>
+                    <Input
+                      name="bonus"
+                      type="number"
+                      step="0.01"
+                      defaultValue={editingPayroll.bonus}
+                      className="h-11 rounded-xl"
+                      onFocus={(e) => e.target.select()}
+                    />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="text-xs font-semibold text-rose-700 mb-1 block">{t('payroll.colLoansDeducted')} (- ETB)</label>
+                    <Input
+                      name="loanDeductions"
+                      type="number"
+                      step="0.01"
+                      defaultValue={editingPayroll.loanDeductions}
+                      className="h-11 rounded-xl"
+                      onFocus={(e) => e.target.select()}
+                    />
+                  </div>
+                  <div>
+                    <label className="text-xs font-semibold text-rose-700 mb-1 block">{t('payroll.colPenaltiesDeducted')} (- ETB)</label>
+                    <Input
+                      name="penaltyDeductions"
+                      type="number"
+                      step="0.01"
+                      defaultValue={editingPayroll.penaltyDeductions}
+                      className="h-11 rounded-xl"
+                      onFocus={(e) => e.target.select()}
+                    />
+                  </div>
+                </div>
+
+                <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-xl space-y-2">
+                  <label className="text-xs font-extrabold text-emerald-950 block">
+                    {t('payroll.finalNetSalaryPayout') || 'Final Net Salary Payout (ETB)'}
+                  </label>
+                  <Input
+                    name="finalAmount"
+                    type="number"
+                    step="0.01"
+                    defaultValue={editingPayroll.finalAmount}
+                    className="font-extrabold text-emerald-800 text-lg bg-white border-emerald-300 h-11 rounded-xl"
+                    onFocus={(e) => e.target.select()}
+                    required
+                  />
+                  <p className="text-[11px] text-emerald-700">
+                    {t('payroll.overridePayoutDesc')}
+                  </p>
+                </div>
+
+                <div>
+                  <label className="text-xs font-semibold text-zinc-700 mb-1 block">{t('common.date') || 'Payment Date'}</label>
+                  <EthDatePicker
+                    name="paymentDate"
+                    defaultValue={editingPayroll.paymentDate ? editingPayroll.paymentDate.split("T")[0] : ""}
+                  />
+                </div>
+              </div>
+            )}
+            <DialogFooter className="flex flex-col sm:flex-row gap-2 w-full pt-2 sm:pt-4">
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => setIsEditPayrollOpen(false)}
+                className="order-2 sm:order-1 w-full sm:w-auto h-11 sm:h-10 border-[#EDE4D5] rounded-xl"
+              >
+                {t('common.cancel') || 'Cancel'}
+              </Button>
+              <Button
+                type="submit"
+                disabled={isSubmitting}
+                className="order-1 sm:order-2 w-full sm:w-auto h-11 sm:h-10 bg-[#4A2E1B] hover:bg-[#382314] text-white font-bold rounded-xl"
+              >
+                {isSubmitting ? (t('common.saving') || 'Saving...') : (t('payroll.savePayrollChanges') || 'Save Payroll Changes')}
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+    </DashboardLayout>
+  );
+}

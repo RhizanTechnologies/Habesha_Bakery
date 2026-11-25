@@ -1,0 +1,1770 @@
+"use client";
+import { useEffect, useState, useMemo, use, useRef } from "react";
+import { useRouter } from "next/navigation";
+import { api } from "@/lib/axios";
+import { toast } from "sonner";
+import DashboardLayout from "@/components/DashboardLayout";
+import { useAuth } from "@/context/AuthContext";
+import { useLanguage } from "@/context/LanguageContext";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { ArrowLeft, Save, CheckCircle2, AlertTriangle, Plus, Trash2, Banknote, Smartphone, CreditCard, DollarSign, PackageCheck, ShoppingCart, Tag, RefreshCw, Eye, Edit3, FileText, X, Check, Lock, RotateCcw } from "lucide-react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { Skeleton } from "@/components/ui/skeleton";
+import { DetailSkeleton, KpiCardsSkeleton, TableSkeleton } from "@/components/ui/skeletons";
+import ConfirmModal from "@/components/ConfirmModal";
+import { useUnsavedChanges } from "@/hooks/useUnsavedChanges";
+
+interface Product {
+  id: string;
+  name: string;
+  unitType: string;
+  basePrice: number;
+  buyPrice?: number | null;
+  category?: { type: string };
+}
+
+interface Supplier {
+  id: string;
+  name: string;
+  type: string;
+}
+
+interface LeftoverItem {
+  productId: string;
+  product?: Product;
+  quantityRemaining: number;
+  damagedQuantity: number;
+  damageReason: string;
+}
+
+interface ExpenseItem {
+  id?: string;
+  amount: number;
+  category: string;
+  description: string;
+  user?: { id?: string; fullName?: string };
+  isEditing?: boolean;
+}
+
+interface ProductionSummaryItem {
+  productId: string;
+  productName: string;
+  unitType: string;
+  categoryName: string;
+  totalProduced: number;
+}
+
+interface SupplierDeliveryItem {
+  id: string;
+  supplierId: string;
+  supplier?: Supplier;
+  productId: string;
+  product?: Product;
+  quantityReceived: number;
+  returnedQuantity?: number;
+  unitBuyPrice: number;
+  unitSellPrice: number;
+  paidAmount?: number;
+  paymentStatus?: string;
+  isPaid: boolean;
+}
+
+interface DailySessionDetail {
+  id: string;
+  date: string;
+  branchId: string;
+  branch?: { id: string; name: string };
+  status: "OPEN" | "PAUSED" | "CLOSED" | "CLOSE_PENDING";
+  label: string | null;
+  openingCash: number | null;
+  cashFloatAmount: number | null;
+  actualCashAmount: number | null;
+  actualCbeAmount: number | null;
+  actualTelebirrAmount: number | null;
+  cashLeftoverAmount: number | null;
+  notes: string | null;
+  draftExchangeLogs?: string | null;
+  productionSummary?: ProductionSummaryItem[];
+  supplierDeliveries?: SupplierDeliveryItem[];
+  expenses?: ExpenseItem[];
+  leftoverRecords?: LeftoverItem[];
+}
+
+export default function SessionClosePage({ params }: { params: Promise<{ id: string }> }) {
+  const resolvedParams = use(params);
+  const router = useRouter();
+  const { user } = useAuth();
+  const { t } = useLanguage();
+  const queryClient = useQueryClient();
+  const isOwner = user?.role === "OWNER";
+  const isAdmin = user?.role === "ADMIN";
+  const isAdminOrOwner = isOwner || isAdmin;
+
+  useEffect(() => {
+    if (user && !isAdminOrOwner) {
+      router.replace('/customer-credits');
+    }
+  }, [user, isAdminOrOwner, router]);
+
+  const [session, setSession] = useState<DailySessionDetail | null>(null);
+  const [products, setProducts] = useState<Product[]>([]);
+  const [suppliers, setSuppliers] = useState<Supplier[]>([]);
+  const [financialCategories, setFinancialCategories] = useState<string[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isSavingDraft, setIsSavingDraft] = useState(false);
+  const [isViewOnly, setIsViewOnly] = useState(false);
+
+  // UX Focus and Scroll Refs
+  const expenseTopRef = useRef<HTMLDivElement | null>(null);
+  const expenseAmountInputRef = useRef<HTMLInputElement | null>(null);
+  const resellFormRef = useRef<HTMLDivElement | null>(null);
+  const resellSupplierRef = useRef<HTMLSelectElement | null>(null);
+
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      const modeParam = new URLSearchParams(window.location.search).get("mode");
+      if (modeParam === "view") {
+        setIsViewOnly(true);
+      }
+    }
+  }, []);
+
+  useEffect(() => {
+    if (session && session.status === "CLOSED" && !isOwner) {
+      setIsViewOnly(true);
+    }
+  }, [session, isOwner]);
+
+  // Form State
+  const [sessionLabel, setSessionLabel] = useState<string>("");
+  const [actualCash, setActualCash] = useState<string>("");
+  const [actualCbe, setActualCbe] = useState<string>("");
+  const [actualTelebirr, setActualTelebirr] = useState<string>("");
+  const [cashLeftover, setCashLeftover] = useState<string>("");
+  const [notes, setNotes] = useState<string>("");
+  const [exchangeLogs, setExchangeLogs] = useState<string>("");
+  const [leftovers, setLeftovers] = useState<Record<string, { quantityRemaining: number | string; damagedQuantity: number | string; damageReason: string }>>({});
+  const [expenseList, setExpenseList] = useState<ExpenseItem[]>([]);
+
+  // Resells Inline Form State (No annoying popup modal)
+  const [isResellFormOpen, setIsResellFormOpen] = useState(false);
+  const [resellSupplierId, setResellSupplierId] = useState("");
+  const [resellProductId, setResellProductId] = useState("");
+  const [resellQty, setResellQty] = useState("1");
+  const [resellBuyPrice, setResellBuyPrice] = useState("");
+  const [resellSellPrice, setResellSellPrice] = useState("");
+  const [resellPaymentSource, setResellPaymentSource] = useState<'DAILY_CASH' | 'OWNER'>('DAILY_CASH');
+  const [resellPaymentMode, setResellPaymentMode] = useState<'FULL' | 'PARTIAL' | 'ZERO'>('FULL');
+  const [resellPaidAmountNow, setResellPaidAmountNow] = useState("");
+  const [isLoggingResell, setIsLoggingResell] = useState(false);
+
+  const isDirty = useMemo(() => {
+    if (isViewOnly) return false;
+    const hasCash = !!(actualCash || actualCbe || actualTelebirr || cashLeftover || notes || exchangeLogs);
+    const hasLeftovers = Object.values(leftovers).some(
+      (l) => (l.quantityRemaining !== "" && Number(l.quantityRemaining) !== 0) || (l.damagedQuantity !== "" && Number(l.damagedQuantity) !== 0)
+    );
+    const hasExpenses = expenseList.length > 0;
+    return hasCash || hasLeftovers || hasExpenses;
+  }, [isViewOnly, actualCash, actualCbe, actualTelebirr, cashLeftover, notes, exchangeLogs, leftovers, expenseList]);
+
+  const { showDiscardModal, guardedAction, confirmDiscard, cancelDiscard } = useUnsavedChanges({ isDirty });
+
+  useEffect(() => {
+    fetchSessionAndProducts();
+  }, [resolvedParams.id]);
+
+  const defaultCategoryList = [
+    "Staff Loan / Salary Advance",
+    "Staff Food / Lunch",
+    "Raw Materials / Ingredients",
+    "Utilities (Water / Power / Gas)",
+    "Rent & Facilities",
+    "Transport / Fuel / Freight",
+    "Maintenance & Repairs",
+    "Supplies & Packaging",
+    "Other Operational Expense",
+  ];
+
+  const allCategoryOptions = Array.from(
+    new Set([
+      ...financialCategories,
+      ...defaultCategoryList,
+      ...expenseList.map((e) => e.category).filter(Boolean),
+    ])
+  );
+
+  const fetchSessionAndProducts = async () => {
+    setIsLoading(true);
+    try {
+      const [resSess, resProd, resFinCat] = await Promise.all([
+        api.get(`/daily-sessions/${resolvedParams.id}`),
+        api.get(`/products?isActive=true&minimal=true`),
+        api.get(`/financial-categories?type=EXPENSE`).catch(() => ({ data: [] })),
+      ]);
+      const s: DailySessionDetail = resSess.data;
+      setSession(s);
+      setProducts(resProd.data);
+
+      const dbFinCats: string[] = Array.isArray(resFinCat.data)
+        ? resFinCat.data.map((c: any) => c.name).filter(Boolean)
+        : [];
+      setFinancialCategories(dbFinCats);
+
+      // Check Closed & Lockout Rules:
+      // CLOSED sessions are permanently locked in View Mode for everyone.
+      // Non-Admin/Owner (Cashier) is locked in View Mode if CLOSE_PENDING or session is before today.
+      const ethTodayYmd = new Date(Date.now() + 3 * 3600 * 1000).toISOString().slice(0, 10);
+      const sessionYmd = s.date ? new Date(s.date).toISOString().slice(0, 10) : "";
+      if (s.status === "CLOSED") {
+        setIsViewOnly(true);
+      } else if (!isAdminOrOwner) {
+        if (s.status === "CLOSE_PENDING" || sessionYmd < ethTodayYmd) {
+          setIsViewOnly(true);
+        } else {
+          setIsViewOnly(false);
+        }
+      } else {
+        // Admin / Owner on OPEN or CLOSE_PENDING: start in active edit mode
+        setIsViewOnly(false);
+      }
+
+      const defaultDayLabel = `Daily Closing - ${new Date(s.date).toISOString().split("T")[0]}`;
+      const cleanLabel = s.label && !s.label.startsWith("Session -") ? s.label : defaultDayLabel;
+      setSessionLabel(cleanLabel);
+      setActualCash(s.actualCashAmount != null ? String(s.actualCashAmount) : "");
+      setActualCbe(s.actualCbeAmount != null ? String(s.actualCbeAmount) : "");
+      setActualTelebirr(s.actualTelebirrAmount != null ? String(s.actualTelebirrAmount) : "");
+      setCashLeftover(s.cashLeftoverAmount != null ? String(s.cashLeftoverAmount) : "");
+      setNotes(s.notes || "");
+      setExchangeLogs(s.draftExchangeLogs || "");
+
+      // Populate leftovers map: default empty so placeholder 0 displays and typing immediately enters fresh number
+      const initialLeftovers: Record<string, { quantityRemaining: number | string; damagedQuantity: number | string; damageReason: string }> = {};
+      (resProd.data || []).forEach((p: Product) => {
+        const existing = (s.leftoverRecords || []).find((r) => r.productId === p.id);
+        initialLeftovers[p.id] = {
+          quantityRemaining: existing && existing.quantityRemaining > 0 ? existing.quantityRemaining : "",
+          damagedQuantity: existing && existing.damagedQuantity > 0 ? existing.damagedQuantity : "",
+          damageReason: existing ? existing.damageReason || "" : "",
+        };
+      });
+      setLeftovers(initialLeftovers);
+
+      // Populate expenses list: preserve existing category name and start in read mode
+      const initialExpenses: ExpenseItem[] = (s.expenses || []).map((e: any) => {
+        const catName = e.financialCategory?.name || e.category || "Other Operational Expense";
+        return {
+          id: e.id,
+          amount: Number(e.amount),
+          category: catName,
+          description: e.description || "",
+          user: e.user ? { id: e.user.id, fullName: e.user.fullName } : undefined,
+          isEditing: false, // Already written expenses start in clean read/summary card mode
+        };
+      });
+      setExpenseList(initialExpenses);
+
+      // Fetch suppliers for resell modal
+      if (s.branchId) {
+        const suppRes = await api.get(`/suppliers?branchId=${s.branchId}`);
+        setSuppliers(suppRes.data);
+      }
+    } catch (e: any) {
+      toast.error(e.response?.data?.error || "Failed to load session closing details");
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleAddExpenseRow = () => {
+    setExpenseList((prev) => [
+      {
+        amount: "" as any,
+        category: allCategoryOptions[0] || "Other Operational Expense",
+        description: "",
+        isEditing: true, // Newly added expense row starts in edit mode ON TOP!
+      },
+      ...prev,
+    ]);
+
+    setTimeout(() => {
+      expenseTopRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+      expenseAmountInputRef.current?.focus();
+    }, 60);
+  };
+
+  const handleToggleResellForm = () => {
+    const nextState = !isResellFormOpen;
+    setIsResellFormOpen(nextState);
+    if (nextState) {
+      setTimeout(() => {
+        resellFormRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+        resellSupplierRef.current?.focus();
+      }, 60);
+    }
+  };
+
+  const handleRemoveExpenseRow = (index: number) => {
+    setExpenseList((prev) => prev.filter((_, i) => i !== index));
+  };
+
+  const handleExpenseChange = (index: number, field: keyof ExpenseItem, value: any) => {
+    setExpenseList((prev) => {
+      const copy = [...prev];
+      copy[index] = { ...copy[index], [field]: value };
+      return copy;
+    });
+  };
+
+  const handleLeftoverChange = (productId: string, field: "quantityRemaining" | "damagedQuantity" | "damageReason", value: any) => {
+    let cleanVal = value;
+    if (field !== "damageReason") {
+      if (value === "" || value === null || value === undefined) {
+        cleanVal = "";
+      } else {
+        // Parse int to strip any accidental leading zeros (e.g., typing 88 when 0 was present)
+        const parsed = parseInt(String(value), 10);
+        cleanVal = isNaN(parsed) ? "" : Math.max(0, parsed);
+      }
+    }
+    setLeftovers((prev) => ({
+      ...prev,
+      [productId]: {
+        ...prev[productId],
+        [field]: cleanVal,
+      },
+    }));
+  };
+
+  const handleLogResellDelivery = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!resellSupplierId || !resellProductId || !resellQty || !resellBuyPrice) {
+      toast.error(t('sessions.toastResellRequiredFields'));
+      return;
+    }
+
+    const totalCost = Number(resellQty) * Number(resellBuyPrice);
+    let amountPaidNow = totalCost;
+    let isPaid = true;
+
+    if (resellPaymentMode === 'ZERO') {
+      amountPaidNow = 0;
+      isPaid = false;
+    } else if (resellPaymentMode === 'PARTIAL') {
+      const enteredPaid = Number(resellPaidAmountNow) || 0;
+      if (enteredPaid <= 0) {
+        toast.error(t("sessions.toastValidPartialAmount"));
+        return;
+      }
+      amountPaidNow = Math.min(totalCost, enteredPaid);
+      isPaid = totalCost > 0 && amountPaidNow >= totalCost - 0.001;
+    }
+
+    setIsLoggingResell(true);
+    try {
+      await api.post("/supplier-deliveries", {
+        supplierId: resellSupplierId,
+        productId: resellProductId,
+        quantityReceived: Number(resellQty),
+        unitBuyPrice: Number(resellBuyPrice),
+        unitSellPrice: resellSellPrice ? Number(resellSellPrice) : undefined,
+        paymentSource: resellPaymentSource,
+        amountPaidNow,
+        isPaid,
+        sessionId: resolvedParams.id,
+      });
+      toast.success(t('sessions.toastResellLogged'));
+      setIsResellFormOpen(false);
+      setResellSupplierId("");
+      setResellProductId("");
+      setResellQty("1");
+      setResellBuyPrice("");
+      setResellSellPrice("");
+      setResellPaymentSource("DAILY_CASH");
+      setResellPaymentMode("FULL");
+      setResellPaidAmountNow("");
+      fetchSessionAndProducts();
+    } catch (err: any) {
+      toast.error(err.response?.data?.error || "Failed to log resell delivery");
+    } finally {
+      setIsLoggingResell(false);
+    }
+  };
+
+  const buildPayload = () => {
+    const formattedLeftovers = Object.entries(leftovers).map(([productId, val]) => ({
+      productId,
+      quantityRemaining: Number(val.quantityRemaining) || 0,
+      damagedQuantity: Number(val.damagedQuantity) || 0,
+      damageReason: val.damageReason || "",
+    }));
+
+    // Validate leftover quantities against available stock limits
+    const availableStockSummary = (session as any)?.availableStockSummary || {};
+    for (const [productId, val] of Object.entries(leftovers)) {
+      const qty = Number(val.quantityRemaining) || 0;
+      const stockInfo = availableStockSummary[productId];
+      if (stockInfo && qty > stockInfo.maxAvailable) {
+        toast.error(
+          `Cannot save leftover of ${qty} Pcs for ${stockInfo.productName}. Maximum available in this session is ${stockInfo.maxAvailable} Pcs (Produced/Delivered: ${stockInfo.producedQty + stockInfo.deliveredQty}, Sold: ${stockInfo.soldQty}). Please correct it.`
+        );
+        return null;
+      }
+    }
+
+    return {
+      label: sessionLabel.trim() || null,
+      actualCashAmount: actualCash !== "" ? Number(actualCash) : null,
+      actualCbeAmount: actualCbe !== "" ? Number(actualCbe) : null,
+      actualTelebirrAmount: actualTelebirr !== "" ? Number(actualTelebirr) : null,
+      cashLeftoverAmount: cashLeftover !== "" ? Number(cashLeftover) : null,
+      notes: notes.trim() || null,
+      draftExchangeLogs: exchangeLogs.trim() || null,
+      leftoverRecords: formattedLeftovers,
+      expenses: expenseList
+        .filter((e) => Number(e.amount) > 0)
+        .map((e) => ({
+          id: e.id,
+          amount: Number(e.amount),
+          category: e.category,
+          description: e.description,
+        })),
+    };
+  };
+
+  const handleSaveDraft = async () => {
+    setIsSavingDraft(true);
+    try {
+      const formattedLeftovers = Object.entries(leftovers).map(([productId, val]) => ({
+        productId,
+        quantityRemaining: Number(val.quantityRemaining) || 0,
+        damagedQuantity: Number(val.damagedQuantity) || 0,
+        damageReason: val.damageReason || "",
+      }));
+
+      const formattedExpenses = expenseList
+        .filter((e) => Number(e.amount) > 0)
+        .map((e) => ({
+          id: e.id,
+          amount: Number(e.amount),
+          category: e.category,
+          description: e.description,
+        }));
+
+      const payload = {
+        label: sessionLabel.trim() || null,
+        actualCashAmount: actualCash !== "" ? Number(actualCash) : null,
+        actualCbeAmount: actualCbe !== "" ? Number(actualCbe) : null,
+        actualTelebirrAmount: actualTelebirr !== "" ? Number(actualTelebirr) : null,
+        cashLeftoverAmount: cashLeftover !== "" ? Number(cashLeftover) : null,
+        notes: notes.trim() || null,
+        draftExchangeLogs: exchangeLogs.trim() || null,
+        leftoverRecords: formattedLeftovers,
+        expenses: formattedExpenses,
+      };
+
+      await api.post(`/daily-sessions/${resolvedParams.id}/save-draft`, payload);
+      toast.success(t('sessions.toastDraftSaved'));
+      await fetchSessionAndProducts();
+      queryClient.invalidateQueries({ queryKey: ["daily-sessions"] });
+      queryClient.invalidateQueries({ queryKey: ["daily-session", resolvedParams.id] });
+      queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+    } catch (e: any) {
+      toast.error(e.response?.data?.error || "Failed to save draft progress");
+    } finally {
+      setIsSavingDraft(false);
+    }
+  };
+
+  const handleSaveEdits = async () => {
+    const payload = buildPayload();
+    if (!payload) return;
+    setIsSubmitting(true);
+    try {
+      await api.patch(`/daily-sessions/${resolvedParams.id}`, payload);
+      toast.success(t('sessions.toastSessionEditsSaved'));
+      fetchSessionAndProducts();
+      queryClient.invalidateQueries({ queryKey: ["daily-sessions"] });
+      queryClient.invalidateQueries({ queryKey: ["daily-session", resolvedParams.id] });
+      queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+    } catch (e: any) {
+      toast.error(e.response?.data?.error || "Failed to save session edits");
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const handleSubmitClose = async () => {
+    const payload = buildPayload();
+    if (!payload) return;
+    setIsSubmitting(true);
+    try {
+      await api.post(`/daily-sessions/${resolvedParams.id}/submit-close`, payload);
+      toast.success(t('sessions.toastSessionSubmittedApproval'));
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["daily-sessions"] }),
+        queryClient.invalidateQueries({ queryKey: ["daily-session", resolvedParams.id] }),
+        queryClient.invalidateQueries({ queryKey: ["dashboard"] }),
+      ]);
+      router.push("/daily-sessions");
+    } catch (e: any) {
+      toast.error(e.response?.data?.error || "Failed to submit close request");
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const handleFinalizeApprove = async () => {
+    if (!isOwner) {
+      toast.error(t('sessions.toastOnlyOwnerFinalize'));
+      return;
+    }
+    const payload = buildPayload();
+    if (!payload) return;
+    setIsSubmitting(true);
+    try {
+      await api.post(`/daily-sessions/${resolvedParams.id}/finalize`, payload);
+      toast.success(t('sessions.toastSessionApproved'));
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["daily-sessions"] }),
+        queryClient.invalidateQueries({ queryKey: ["daily-session", resolvedParams.id] }),
+        queryClient.invalidateQueries({ queryKey: ["dashboard"] }),
+        queryClient.invalidateQueries({ queryKey: ["products"] }),
+      ]);
+      router.push("/daily-sessions");
+    } catch (e: any) {
+      toast.error(e.response?.data?.error || "Failed to finalize session");
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const handleReopenSession = async () => {
+    if (!isOwner) {
+      toast.error(t('sessions.toastOnlyOwnerReopen'));
+      return;
+    }
+    setIsSubmitting(true);
+    try {
+      await api.post(`/daily-sessions/${resolvedParams.id}/reopen`);
+      toast.success(t('sessions.toastSessionReopenedOpen'));
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["daily-sessions"] }),
+        queryClient.invalidateQueries({ queryKey: ["daily-session", resolvedParams.id] }),
+        queryClient.invalidateQueries({ queryKey: ["dashboard"] }),
+      ]);
+      router.push("/daily-sessions");
+    } catch (e: any) {
+      toast.error(e.response?.data?.error || "Failed to reopen session");
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const totalExpenseSum = expenseList.reduce((sum, e) => sum + (Number(e.amount) || 0), 0);
+  const totalEnteredCash = (Number(actualCash) || 0) + (Number(actualCbe) || 0) + (Number(actualTelebirr) || 0);
+
+  if (isLoading && !session) {
+    return (
+      <DashboardLayout>
+        <div className="space-y-6">
+          <div className="flex items-center gap-3">
+            <Skeleton className="h-5 w-32" />
+          </div>
+          <DetailSkeleton />
+          <KpiCardsSkeleton count={4} />
+          <TableSkeleton rows={6} columns={6} hasActions={false} />
+        </div>
+      </DashboardLayout>
+    );
+  }
+
+  if (!session) {
+    return (
+      <DashboardLayout>
+        <div className="text-center py-20 text-red-600 font-semibold">{t('sessions.sessionNotFound')}</div>
+      </DashboardLayout>
+    );
+  }
+
+  const productionSummary = session.productionSummary || [];
+  const supplierDeliveries = [...(session.supplierDeliveries || [])].reverse();
+
+  return (
+    <DashboardLayout>
+      {/* Top Header */}
+      <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 mb-6 bg-white border border-[#EDE4D5] rounded-2xl p-4 shadow-xs">
+        <div className="flex items-center gap-3 min-w-0">
+          <Button
+            variant="ghost"
+            onClick={() => guardedAction(() => router.push("/daily-sessions"))}
+            className="p-2 rounded-xl text-[#8C7361] hover:bg-[#F4ECE1] shrink-0"
+          >
+            <ArrowLeft className="w-5 h-5" />
+          </Button>
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-2">
+              <Tag className="w-4 h-4 text-[#E87A18] shrink-0" />
+              <Input
+                type="text"
+                placeholder={t('sessions.labelPlaceholder')}
+                value={sessionLabel}
+                disabled={isViewOnly}
+                onChange={(e) => setSessionLabel(e.target.value)}
+                className="font-extrabold text-base sm:text-lg text-[#2C1B10] bg-transparent border-b border-[#EDE4D5] rounded-none focus:border-[#E87A18] focus:ring-0 p-0 h-auto w-full max-w-xs sm:max-w-md disabled:opacity-90 truncate"
+              />
+            </div>
+            <p className="text-xs text-[#8C7361] mt-1 truncate">
+              Date: <strong className="text-[#2C1B10]">{new Date(session.date).toISOString().split("T")[0]}</strong> | Branch: <strong className="text-[#2C1B10]">{session.branch?.name || "Main Branch"}</strong>
+            </p>
+          </div>
+        </div>
+
+        <div className="flex items-center justify-between sm:justify-end gap-2 flex-wrap pt-2 md:pt-0 border-t md:border-t-0 border-[#F4ECE1]">
+          <div className="flex items-center bg-[#FAF6F0] p-1 rounded-xl border border-[#EDE4D5]">
+            <Button
+              size="sm"
+              variant={isViewOnly ? "default" : "ghost"}
+              onClick={() => setIsViewOnly(true)}
+              className={isViewOnly ? "bg-indigo-700 text-white font-bold text-xs rounded-lg shadow-xs h-8 px-3" : "text-[#8C7361] text-xs hover:bg-[#F4ECE1] h-8 px-3"}
+            >
+              <Eye className="w-3.5 h-3.5 mr-1" /> View Mode
+            </Button>
+            <Button
+              size="sm"
+              variant={!isViewOnly ? "default" : "ghost"}
+              onClick={() => {
+                if (session.status === "CLOSED" && !isOwner) {
+                  toast.error(t('sessions.toastSessionClosedRestricted'));
+                  return;
+                }
+                setIsViewOnly(false);
+              }}
+              className={!isViewOnly ? "bg-[#4A2E1B] text-white font-bold text-xs rounded-lg shadow-xs h-8 px-3" : "text-[#8C7361] text-xs hover:bg-[#F4ECE1] h-8 px-3"}
+            >
+              <Edit3 className="w-3.5 h-3.5 mr-1" /> Edit Mode
+            </Button>
+          </div>
+
+          <span className={`px-3 py-1 rounded-full text-xs font-extrabold uppercase tracking-wide border shrink-0 ${
+            session.status === "CLOSED"
+              ? "bg-zinc-100 text-zinc-800 border-zinc-300"
+              : session.status === "CLOSE_PENDING"
+              ? "bg-amber-100 text-amber-900 border-amber-300 animate-pulse"
+              : "bg-emerald-100 text-emerald-800 border-emerald-300"
+          }`}>
+            Status: {session.status.replace("_", " ")}
+          </span>
+        </div>
+      </div>
+
+      {/* Owner Direct Edit Banner on CLOSED Sessions */}
+      {session.status === "CLOSED" && isOwner && (
+        <div className="mb-6 p-4 rounded-2xl bg-amber-50 border border-amber-200 text-amber-900 flex items-start space-x-3 shadow-sm">
+          <AlertTriangle className="w-5 h-5 text-amber-600 flex-shrink-0 mt-0.5" />
+          <div>
+            <h4 className="font-extrabold text-sm">{t('sessions.ownerDirectAuditMode')}</h4>
+            <p className="text-xs text-amber-800 mt-0.5">
+              {t('sessions.ownerDirectAuditDesc')}
+            </p>
+          </div>
+        </div>
+      )}
+
+      {/* Admin Closed Lock Banner */}
+      {session.status === "CLOSED" && !isOwner && (
+        <div className="mb-6 p-4 rounded-2xl bg-zinc-100 border border-zinc-200 text-zinc-900 flex items-start space-x-3 shadow-sm">
+          <Lock className="w-5 h-5 text-zinc-600 flex-shrink-0 mt-0.5" />
+          <div>
+            <h4 className="font-extrabold text-sm">{t("sessions.sessionClosedReadOnly") || "Session Closed (Read Only)"}</h4>
+            <p className="text-xs text-zinc-700 mt-0.5">
+              This session is closed and locked. Only the Owner can modify closed sessions or reopen them. If corrections are needed, please request the Owner to reopen this session.
+            </p>
+          </div>
+        </div>
+      )}
+
+      {/* Approval Status Banner */}
+      {session.status === "CLOSE_PENDING" && (
+        <div className="mb-6 p-4 rounded-2xl bg-amber-50 border border-amber-200 text-amber-900 flex items-start space-x-3 shadow-sm">
+          <AlertTriangle className="w-5 h-5 text-amber-700 flex-shrink-0 mt-0.5" />
+          <div>
+            <h4 className="font-extrabold text-sm">{t("sessions.sessionClosePendingApproval") || "Session Close Submitted — Pending Owner Approval"}</h4>
+            <p className="text-xs text-amber-800 mt-0.5">
+              {isOwner
+                ? "The closing report and inventory counts have been submitted. You can review, make adjustments, and click 'Approve & Finalize Session' below."
+                : "The daily closing counts have been submitted for approval. Waiting for the Owner to finalize the session."}
+            </p>
+          </div>
+        </div>
+      )}
+
+      <div className="space-y-6">
+        {/* Section 1: Detailed Daily Production & Resell Breakdown */}
+        <div className="bg-white border border-[#EDE4D5] rounded-2xl p-4 sm:p-6 shadow-sm">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">
+            <div>
+              <h2 className="text-base sm:text-lg font-extrabold text-[#2C1B10] flex items-center gap-2">
+                <PackageCheck className="w-5 h-5 text-emerald-600 shrink-0" />
+                <span>{t("sessions.productionAndResellSummary") || "Production & Resell Summary"}</span>
+              </h2>
+              <p className="text-xs text-[#8C7361] mt-0.5">
+                {t("sessions.producedItemsAndResaleStock") || "Produced items and resale stock logged in this shift."}
+              </p>
+            </div>
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="text-xs font-bold px-3 py-1 bg-emerald-50 text-emerald-800 rounded-full border border-emerald-200">
+                {productionSummary.reduce((acc, p) => acc + p.totalProduced, 0)} {t("sessions.pcsProduced") || "Pcs Produced"}
+              </span>
+              <span className="text-xs font-bold px-3 py-1 bg-indigo-50 text-indigo-800 rounded-full border border-indigo-200">
+                {supplierDeliveries.reduce((acc, d) => acc + d.quantityReceived, 0)} {t("sessions.resellPcsDelivered") || "Resell Pcs Delivered"}
+              </span>
+            </div>
+          </div>
+
+          {productionSummary.length === 0 && supplierDeliveries.length === 0 ? (
+            <div className="text-center py-6 border border-dashed border-[#EDE4D5] rounded-xl text-xs text-[#8C7361]">
+              {t("sessions.noBatchesOrDeliveries") || "No production batches or resell deliveries recorded for this session date yet."}
+            </div>
+          ) : (
+            <div className="space-y-4">
+              {/* Group items by Category */}
+              {Object.entries(
+                productionSummary.reduce((acc, item) => {
+                  const cat = item.categoryName || "General Bakery";
+                  if (!acc[cat]) acc[cat] = [];
+                  acc[cat].push(item);
+                  return acc;
+                }, {} as Record<string, ProductionSummaryItem[]>)
+              ).map(([catName, catItems]) => (
+                <div key={catName} className="bg-[#FAF6F0] p-4 rounded-xl border border-[#EDE4D5] space-y-3">
+                  <div className="flex items-center justify-between border-b border-[#EDE4D5] pb-2">
+                    <span className="text-xs font-extrabold uppercase tracking-wider text-[#4A2E1B] flex items-center gap-1.5">
+                      <Tag className="w-3.5 h-3.5 text-[#E87A18]" /> Category: {catName}
+                    </span>
+                    <span className="text-[11px] font-bold text-[#8C7361] font-mono">
+                      {catItems.reduce((s, i) => s + i.totalProduced, 0)} Pcs
+                    </span>
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5">
+                    {catItems.map((item) => (
+                      <div key={item.productId} className="bg-white p-3 rounded-lg border border-[#EDE4D5] flex items-center justify-between shadow-2xs">
+                        <div>
+                          <h4 className="font-extrabold text-xs text-[#2C1B10]">{item.productName}</h4>
+                          <p className="text-[10px] text-[#8C7361]">{item.unitType}</p>
+                        </div>
+                        <span className="font-mono font-extrabold text-sm text-[#4A2E1B]">
+                          {item.totalProduced}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* Section 2: Payment Channel Breakdown (Cash, CBE, Telebirr & Tomorrow Float) */}
+        <div className="bg-white border border-[#EDE4D5] rounded-2xl p-4 sm:p-6 shadow-sm">
+          <h2 className="text-base sm:text-lg font-extrabold text-[#2C1B10] mb-1 flex items-center gap-2">
+            <DollarSign className="w-5 h-5 text-[#E87A18] shrink-0" />
+            <span>{t("sessions.paymentChannelsAndReconciliation") || "Payment Channels & Cash Reconciliation"}</span>
+          </h2>
+          <p className="text-xs text-[#8C7361] mb-5">
+            {t("sessions.recordActualRevenues") || "Record actual collected revenues (Cash in Hand, CBE Bank, Telebirr) and specify the Leftover Cash reserved for tomorrow's opening float."}
+          </p>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
+            {/* 1. Physical Cash in Hand */}
+            <div className="bg-[#FAF6F0] p-4 rounded-xl border border-[#EDE4D5] flex flex-col justify-between">
+              <div>
+                <label className="text-xs font-bold text-[#4A2E1B] flex items-center justify-between gap-1.5 mb-2">
+                  <span className="flex items-center gap-1.5">
+                    <Banknote className="w-4 h-4 text-emerald-600" /> {t("sessions.cashInHandToday") || "Cash in Hand Today"}
+                  </span>
+                </label>
+                <Input
+                  type="number"
+                  step="0.01"
+                  placeholder="0.00"
+                  value={actualCash}
+                  disabled={isViewOnly}
+                  onFocus={(e) => e.target.select()}
+                  onChange={(e) => setActualCash(e.target.value)}
+                  className="bg-white border-[#EDE4D5] font-mono font-bold text-base disabled:opacity-80"
+                />
+              </div>
+              <p className="text-[10px] text-[#8C7361] mt-2">{t('sessions.paperCashCollected')}</p>
+            </div>
+
+            {/* 2. CBE Bank Transfer */}
+            <div className="bg-[#FAF6F0] p-4 rounded-xl border border-[#EDE4D5] flex flex-col justify-between">
+              <div>
+                <label className="text-xs font-bold text-[#4A2E1B] flex items-center gap-1.5 mb-2">
+                  <CreditCard className="w-4 h-4 text-blue-600" /> {t("sessions.cbeBankTransfer") || "CBE Bank Transfer"}
+                </label>
+                <Input
+                  type="number"
+                  step="0.01"
+                  placeholder="0.00"
+                  value={actualCbe}
+                  disabled={isViewOnly}
+                  onFocus={(e) => e.target.select()}
+                  onChange={(e) => setActualCbe(e.target.value)}
+                  className="bg-white border-[#EDE4D5] font-mono font-bold text-base disabled:opacity-80"
+                />
+              </div>
+              <p className="text-[10px] text-[#8C7361] mt-2">{t('sessions.directBankTransferIncome')}</p>
+            </div>
+
+            {/* 3. Telebirr Mobile Money */}
+            <div className="bg-[#FAF6F0] p-4 rounded-xl border border-[#EDE4D5] flex flex-col justify-between">
+              <div>
+                <label className="text-xs font-bold text-[#4A2E1B] flex items-center gap-1.5 mb-2">
+                  <Smartphone className="w-4 h-4 text-purple-600" /> {t("sessions.telebirrMoney") || "Telebirr Money"}
+                </label>
+                <Input
+                  type="number"
+                  step="0.01"
+                  placeholder="0.00"
+                  value={actualTelebirr}
+                  disabled={isViewOnly}
+                  onFocus={(e) => e.target.select()}
+                  onChange={(e) => setActualTelebirr(e.target.value)}
+                  className="bg-white border-[#EDE4D5] font-mono font-bold text-base disabled:opacity-80"
+                />
+              </div>
+              <p className="text-[10px] text-[#8C7361] mt-2">{t('sessions.mobileWalletPaymentIncome')}</p>
+            </div>
+
+            {/* 4. Leftover Cash for Tomorrow */}
+            <div className="bg-[#FFFBEB] p-4 rounded-xl border border-[#FDE68A] flex flex-col justify-between">
+              <div>
+                <label className="text-xs font-bold text-[#92400E] flex items-center justify-between gap-1.5 mb-2">
+                  <span className="flex items-center gap-1.5">
+                    <RefreshCw className="w-4 h-4 text-amber-600" /> {t("sessions.tomorrowFloat") || "Tomorrow's Float (Leftover)"}
+                  </span>
+                  {session?.cashLeftoverAmount != null && (
+                    <span className="text-[9px] font-extrabold bg-amber-200 text-amber-900 px-1.5 py-0.5 rounded border border-amber-300">
+                      Cashier: {Number(session.cashLeftoverAmount).toFixed(2)}
+                    </span>
+                  )}
+                </label>
+                <Input
+                  type="number"
+                  step="0.01"
+                  placeholder="0.00"
+                  value={cashLeftover}
+                  disabled={isViewOnly}
+                  onFocus={(e) => e.target.select()}
+                  onChange={(e) => setCashLeftover(e.target.value)}
+                  className="bg-white border-[#FDE68A] font-mono font-bold text-base text-[#92400E] disabled:opacity-80"
+                />
+              </div>
+              <p className="text-[10px] text-amber-700 font-medium mt-2">{t('sessions.cashKeptInDrawerTomorrow')}</p>
+            </div>
+          </div>
+
+          {/* Detailed Financial Summary & Reconciliation Bar */}
+          <div className="mt-5 pt-4 border-t border-[#F4ECE1] grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 text-xs">
+            <div className="bg-[#FAF6F0] p-3.5 rounded-xl border border-[#EDE4D5] flex flex-col justify-between">
+              <span className="text-[10px] uppercase font-bold tracking-wider text-[#8C7361] block">{t('sessions.totalShiftRevenue')}</span>
+              <span className="text-base sm:text-lg font-extrabold font-mono text-[#2C1B10] mt-1">
+                {((Number(actualCash) || 0) + (Number(actualCbe) || 0) + (Number(actualTelebirr) || 0)).toFixed(2)} ETB
+              </span>
+            </div>
+
+            <div className="bg-[#FAF6F0] p-3.5 rounded-xl border border-[#EDE4D5] flex flex-col justify-between">
+              <span className="text-[10px] uppercase font-bold tracking-wider text-[#8C7361] block">{t('sessions.bankIncome')}</span>
+              <span className="text-base sm:text-lg font-extrabold font-mono text-blue-700 mt-1">
+                {((Number(actualCbe) || 0) + (Number(actualTelebirr) || 0)).toFixed(2)} ETB
+              </span>
+            </div>
+
+            <div className="bg-[#FAF6F0] p-3.5 rounded-xl border border-[#EDE4D5] flex flex-col justify-between">
+              <span className="text-[10px] uppercase font-bold tracking-wider text-[#8C7361] block">{t('sessions.cashExpensesPaid')}</span>
+              <span className="text-base sm:text-lg font-extrabold font-mono text-rose-600 mt-1">
+                -{totalExpenseSum.toFixed(2)} ETB
+              </span>
+            </div>
+
+            <div className="bg-emerald-50 p-3.5 rounded-xl border border-emerald-200 flex flex-col justify-between">
+              <span className="text-[10px] uppercase font-bold tracking-wider text-emerald-800 block">{t('sessions.netCashHandover')}</span>
+              <span className="text-base sm:text-lg font-extrabold font-mono text-emerald-700 mt-1">
+                {(
+                  (Number(actualCash) || 0) -
+                  totalExpenseSum -
+                  (Number(cashLeftover) || 0)
+                ).toFixed(2)} ETB
+              </span>
+            </div>
+          </div>
+        </div>
+
+        {/* Section 3: Session Expenses & Loans List */}
+        <div className="bg-white border border-[#EDE4D5] rounded-2xl p-4 sm:p-6 shadow-sm">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">
+            <div>
+              <h2 className="text-base sm:text-lg font-extrabold text-[#2C1B10] flex items-center gap-2">
+                <FileText className="w-5 h-5 text-[#E87A18] shrink-0" />
+                <span>{t("sessions.sessionExpensesAndStaffLoans") || "Session Expenses & Staff Loans"}</span>
+              </h2>
+              <p className="text-xs text-[#8C7361] mt-0.5">
+                {t("sessions.sessionExpensesDesc") || "List all expenses paid during this shift (including staff loans, transport, raw material purchases, etc.)"}
+              </p>
+            </div>
+            <Button
+              onClick={handleAddExpenseRow}
+              disabled={isViewOnly}
+              size="sm"
+              className="bg-[#4A2E1B] text-white hover:bg-[#3D2314] text-xs font-bold rounded-xl disabled:opacity-50 w-full sm:w-auto h-9"
+            >
+              <Plus className="w-4 h-4 mr-1" /> {t("expenses.addExpense") || "Add Expense Item"}
+            </Button>
+          </div>
+
+          {expenseList.length === 0 ? (
+            <div className="text-center py-6 border border-dashed border-[#EDE4D5] rounded-xl text-xs text-[#8C7361]">
+              No expenses recorded for this session yet. Click "Add Expense Item" to add staff loans or operational costs.
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {expenseList.map((exp, idx) => (
+                exp.isEditing ? (
+                  /* ── EDIT MODE CARD ── */
+                  <div
+                    key={idx}
+                    ref={idx === 0 ? expenseTopRef : undefined}
+                    className="bg-[#FAF6F0] p-3.5 rounded-xl border border-amber-300 shadow-2xs space-y-3 sm:space-y-0 sm:grid sm:grid-cols-12 sm:gap-3 sm:items-center animate-in fade-in duration-150"
+                  >
+                    <div className="sm:col-span-4">
+                      <label className="text-[10px] font-bold text-[#8C7361] block mb-1">{t('expenses.categoryLabel')}</label>
+                      <select
+                        value={exp.category}
+                        disabled={isViewOnly}
+                        onChange={(e) => handleExpenseChange(idx, "category", e.target.value)}
+                        className="w-full bg-white border border-[#EDE4D5] rounded-lg h-9 text-xs px-2 font-semibold text-[#2C1B10] disabled:opacity-80 focus:ring-1 focus:ring-amber-500"
+                      >
+                        {allCategoryOptions.map((cat) => (
+                          <option key={cat} value={cat}>{cat}</option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div className="sm:col-span-3">
+                      <label className="text-[10px] font-bold text-[#8C7361] block mb-1">{t("common.amount")} (ETB)</label>
+                      <Input
+                        ref={idx === 0 ? expenseAmountInputRef : undefined}
+                        type="number"
+                        step="0.01"
+                        placeholder="0.00"
+                        value={exp.amount || ""}
+                        disabled={isViewOnly}
+                        onFocus={(e) => e.target.select()}
+                        onChange={(e) => handleExpenseChange(idx, "amount", e.target.value)}
+                        className="bg-white border-[#EDE4D5] h-9 text-xs font-mono font-bold disabled:opacity-80 focus:ring-2 focus:ring-amber-500/20"
+                      />
+                    </div>
+
+                    <div className="sm:col-span-3">
+                      <label className="text-[10px] font-bold text-[#8C7361] block mb-1">{t('sessions.descPersonReason')}</label>
+                      <Input
+                        type="text"
+                        placeholder={t('sessions.expenseNotesPlaceholder')}
+                        value={exp.description || ""}
+                        disabled={isViewOnly}
+                        onChange={(e) => handleExpenseChange(idx, "description", e.target.value)}
+                        className="bg-white border-[#EDE4D5] h-9 text-xs disabled:opacity-80"
+                      />
+                    </div>
+
+                    <div className="sm:col-span-2 flex items-center justify-end gap-1.5 pt-2 sm:pt-0 border-t sm:border-t-0 border-[#EDE4D5]">
+                      <Button
+                        type="button"
+                        size="sm"
+                        onClick={() => handleExpenseChange(idx, "isEditing", false)}
+                        className="bg-emerald-700 hover:bg-emerald-800 text-white h-9 px-3 text-xs font-bold rounded-lg flex-1 sm:flex-initial shadow-2xs"
+                      >
+                        <Check className="w-3.5 h-3.5 mr-1" /> {t("common.done") || "Done"}
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        disabled={isViewOnly}
+                        onClick={() => handleRemoveExpenseRow(idx)}
+                        className="h-9 w-9 p-0 text-rose-600 hover:bg-rose-50 rounded-lg disabled:opacity-40"
+                        title={t("expenses.deleteExpense") || "Remove expense item"}
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </Button>
+                    </div>
+                  </div>
+                ) : (
+                  /* ── READ-ONLY SUMMARY CARD (Recorded/Written Expense) ── */
+                  <div key={idx} className="bg-[#FAF6F0] p-3.5 rounded-xl border border-[#EDE4D5] flex flex-col sm:flex-row sm:items-center justify-between gap-3 hover:border-amber-300/60 transition-all">
+                    <div className="flex-1 min-w-0 space-y-1">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="px-2.5 py-0.5 rounded-full text-xs font-extrabold bg-amber-100 text-amber-950 border border-amber-300 inline-flex items-center gap-1.5">
+                          <Tag className="w-3 h-3 text-[#E87A18]" />
+                          {exp.category}
+                        </span>
+                        {exp.user?.fullName && (
+                          <span className="text-[10px] text-[#8C7361] font-medium">{t("common.by")} {exp.user.fullName}</span>
+                        )}
+                      </div>
+                      <p className="text-xs text-[#2C1B10] font-medium">
+                        {exp.description ? exp.description : <span className="italic text-[#8C7361]">{t('sessions.noDescriptionProvided')}</span>}
+                      </p>
+                    </div>
+
+                    <div className="flex items-center justify-between sm:justify-end gap-3 shrink-0 pt-2 sm:pt-0 border-t sm:border-t-0 border-[#EDE4D5]">
+                      <span className="font-mono font-extrabold text-sm sm:text-base text-rose-600">
+                        -{Number(exp.amount || 0).toFixed(2)} ETB
+                      </span>
+
+                      {!isViewOnly && (
+                        <div className="flex items-center gap-1">
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            onClick={() => handleExpenseChange(idx, "isEditing", true)}
+                            className="h-8 px-2.5 text-xs font-bold text-[#4A2E1B] border-[#EDE4D5] hover:bg-[#F4ECE1] rounded-lg"
+                          >
+                            <Edit3 className="w-3.5 h-3.5 mr-1" /> {t("common.edit")}
+                          </Button>
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => handleRemoveExpenseRow(idx)}
+                            className="h-8 w-8 p-0 text-rose-600 hover:bg-rose-50 rounded-lg"
+                            title={t("expenses.deleteExpense") || "Remove expense"}
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </Button>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )
+              ))}
+            </div>
+          )}
+
+          <div className="mt-4 pt-3 border-t border-[#F4ECE1] text-right">
+            <span className="text-xs font-bold text-[#8C7361]">
+              {t("sessions.totalSessionExpenses") || "Total Session Expenses:"} <strong className="text-rose-600 font-mono text-sm ml-1">{totalExpenseSum.toFixed(2)} ETB</strong>
+            </span>
+          </div>
+        </div>
+
+        {/* Section 4: Resells & Supplier Purchases (Session-Based) */}
+        <div className="bg-white border border-[#EDE4D5] rounded-2xl p-4 sm:p-6 shadow-sm">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">
+            <div>
+              <h2 className="text-base sm:text-lg font-extrabold text-[#2C1B10] flex items-center gap-2">
+                <ShoppingCart className="w-5 h-5 text-indigo-600 shrink-0" />
+                <span>{t("sessions.resellProductsAndDeliveries") || "Resell Products & Supplier Deliveries"}</span>
+              </h2>
+              <p className="text-xs text-[#8C7361] mt-0.5">
+                {t("sessions.resellProductsDesc") || "External products purchased for resell (drinks, snacks, milk, water) during this session."}
+              </p>
+            </div>
+            <Button
+              type="button"
+              onClick={handleToggleResellForm}
+              size="sm"
+              className={`text-xs font-bold rounded-xl w-full sm:w-auto h-9 transition-all ${
+                isResellFormOpen
+                  ? "bg-[#FAF6F0] text-[#4A2E1B] border border-[#EDE4D5] hover:bg-[#F4ECE1]"
+                  : "bg-indigo-700 text-white hover:bg-indigo-800 shadow-xs"
+              }`}
+            >
+              {isResellFormOpen ? (
+                <>
+                  <X className="w-4 h-4 mr-1.5" /> {t("sessions.closeEntryForm") || "Close Entry Form"}
+                </>
+              ) : (
+                <>
+                  <Plus className="w-4 h-4 mr-1.5" /> {t("sessions.logResellDelivery") || "Log Resell Delivery"}
+                </>
+              )}
+            </Button>
+          </div>
+
+          {/* Inline Expandable Form (No cramped popup modal on mobile!) */}
+          {isResellFormOpen && (
+            <div
+              ref={resellFormRef}
+              className="mb-5 bg-[#FAF6F0] p-4 sm:p-5 rounded-2xl border border-indigo-200/90 shadow-2xs space-y-4 animate-in fade-in slide-in-from-top-2 duration-200"
+            >
+              <div className="flex items-center justify-between border-b border-[#EDE4D5] pb-3">
+                <div className="flex items-center gap-2.5">
+                  <div className="p-2 bg-indigo-100 text-indigo-700 rounded-xl">
+                    <ShoppingCart className="w-4 h-4" />
+                  </div>
+                  <div>
+                    <h3 className="font-extrabold text-sm text-[#2C1B10]">{t('sessions.logResellDelivery')}</h3>
+                    <p className="text-[11px] text-[#8C7361]">{t('sessions.recordSupplierPurchasesDesc')}</p>
+                  </div>
+                </div>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setIsResellFormOpen(false)}
+                  className="h-8 w-8 p-0 text-[#8C7361] hover:bg-[#EDE4D5] rounded-lg"
+                >
+                  <X className="w-4 h-4" />
+                </Button>
+              </div>
+
+              <form onSubmit={handleLogResellDelivery} className="space-y-3.5">
+                {/* 1. Supplier & Product */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="text-xs font-bold text-[#4A2E1B] block mb-1">
+                      {t("suppliers.supplier") || "Supplier"} <span className="text-rose-600">*</span>
+                    </label>
+                    <select
+                      ref={resellSupplierRef}
+                      required
+                      value={resellSupplierId}
+                      onChange={(e) => setResellSupplierId(e.target.value)}
+                      className="w-full bg-white border border-[#EDE4D5] rounded-xl h-10 text-xs px-3 font-medium text-[#2C1B10] focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500"
+                    >
+                      <option value="">{t('sessions.selectSupplier')}</option>
+                      {suppliers.map((s) => (
+                        <option key={s.id} value={s.id}>{s.name} ({s.type})</option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="text-xs font-bold text-[#4A2E1B] block mb-1">
+                      {t("sessions.resellProduct")} <span className="text-rose-600">*</span>
+                    </label>
+                    <select
+                      required
+                      value={resellProductId}
+                      onChange={(e) => {
+                        setResellProductId(e.target.value);
+                        const p = products.find((pr) => pr.id === e.target.value);
+                        if (p) {
+                          setResellSellPrice(String(p.basePrice));
+                          if (p.buyPrice != null) {
+                            setResellBuyPrice(String(p.buyPrice));
+                          }
+                        }
+                      }}
+                      className="w-full bg-white border border-[#EDE4D5] rounded-xl h-10 text-xs px-3 font-medium text-[#2C1B10] focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500"
+                    >
+                      <option value="">{t('sessions.selectProduct')}</option>
+                      {products
+                        .filter((p) => p.category?.type === 'RESELL')
+                        .map((p) => (
+                          <option key={p.id} value={p.id}>{p.name} ({p.unitType}) - {p.basePrice} ETB</option>
+                        ))}
+                    </select>
+                  </div>
+                </div>
+
+                {/* 2. Quantities & Prices */}
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                  <div>
+                    <label className="text-xs font-bold text-[#4A2E1B] block mb-1">
+                      {t("sessions.quantityReceived") || "Quantity Received"} <span className="text-rose-600">*</span>
+                    </label>
+                    <Input
+                      type="number"
+                      min="1"
+                      required
+                      value={resellQty}
+                      onChange={(e) => setResellQty(e.target.value)}
+                      className="bg-white border-[#EDE4D5] h-10 text-xs font-mono font-bold"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="text-xs font-bold text-[#4A2E1B] block mb-1">
+                      {t("sessions.unitBuyPrice") || "Unit Buy Price (ETB)"} <span className="text-rose-600">*</span>
+                    </label>
+                    <Input
+                      type="number"
+                      step="0.01"
+                      required
+                      placeholder="0.00"
+                      value={resellBuyPrice}
+                      onChange={(e) => setResellBuyPrice(e.target.value)}
+                      className="bg-white border-[#EDE4D5] h-10 text-xs font-mono font-bold"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="text-xs font-bold text-[#4A2E1B] block mb-1">
+                      {t("sessions.unitSellPrice") || "Unit Sell Price (ETB)"}
+                    </label>
+                    <Input
+                      type="number"
+                      step="0.01"
+                      placeholder="0.00"
+                      value={resellSellPrice}
+                      onChange={(e) => setResellSellPrice(e.target.value)}
+                      className="bg-white border-[#EDE4D5] h-10 text-xs font-mono font-bold"
+                    />
+                  </div>
+                </div>
+
+                {/* 3. Payment Source & Payment Status */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="text-xs font-bold text-[#4A2E1B] block mb-1">
+                      {t("sessions.paidFrom") || "Paid From"}
+                    </label>
+                    <select
+                      value={resellPaymentSource}
+                      onChange={(e) => setResellPaymentSource(e.target.value as 'DAILY_CASH' | 'OWNER')}
+                      className="w-full bg-white border border-[#EDE4D5] rounded-xl h-10 text-xs px-3 font-medium text-[#2C1B10] focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500"
+                    >
+                      <option value="DAILY_CASH">{t("sessions.dailyMoneyDrawer") || "Daily Money (Cashier Register)"}</option>
+                      <option value="OWNER">{t('sessions.paidByOwnerDirect')}</option>
+                    </select>
+                    <p className="text-[10px] text-[#8C7361] mt-1">
+                      {resellPaymentSource === 'DAILY_CASH'
+                        ? 'Deducted directly from daily cashier register drawer.'
+                        : 'Paid externally by owner; does not reduce drawer cash.'}
+                    </p>
+                  </div>
+
+                  <div>
+                    <label className="text-xs font-bold text-[#4A2E1B] block mb-1">
+                      {t("sessions.paymentStatus")}
+                    </label>
+                    <select
+                      value={resellPaymentMode}
+                      onChange={(e) => {
+                        const mode = e.target.value as 'FULL' | 'PARTIAL' | 'ZERO';
+                        setResellPaymentMode(mode);
+                        if (mode === 'PARTIAL' && !resellPaidAmountNow) {
+                          const half = ((Number(resellQty) * Number(resellBuyPrice) || 0) / 2).toFixed(2);
+                          setResellPaidAmountNow(half);
+                        }
+                      }}
+                      className="w-full bg-white border border-[#EDE4D5] rounded-xl h-10 text-xs px-3 font-medium text-[#2C1B10] focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500"
+                    >
+                      <option value="FULL">{t("sessions.paidImmediatelyFull") || "Paid Cash (100% Fully Paid Now)"}</option>
+                      <option value="PARTIAL">{t("sessions.partialDownPayment") || "Partial Down Payment (Pay Some Now)"}</option>
+                      <option value="ZERO">{t("sessions.onCreditSupplier") || "On Credit (Unpaid Supplier Bill)"}</option>
+                    </select>
+                    <p className="text-[10px] text-[#8C7361] mt-1">
+                      {resellPaymentMode === 'FULL'
+                        ? 'Payment settled immediately in full at delivery time.'
+                        : resellPaymentMode === 'PARTIAL'
+                        ? 'Pay a portion now, remaining balance recorded as supplier debt.'
+                        : 'Recorded as supplier debt for later settlement.'}
+                    </p>
+                  </div>
+                </div>
+
+                {resellPaymentMode === 'PARTIAL' && (
+                  <div className="bg-amber-50/70 border border-amber-200 rounded-xl p-3 space-y-2">
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                      <label className="text-xs font-bold text-amber-900">
+                        Amount Paid Now (ETB) <span className="text-rose-600">*</span>
+                      </label>
+                      <span className="text-[11px] text-amber-700">
+                        Remaining Debt: <strong className="font-mono text-rose-700">{Math.max(0, (Number(resellQty) * Number(resellBuyPrice) || 0) - (Number(resellPaidAmountNow) || 0)).toFixed(2)} ETB</strong>
+                      </span>
+                    </div>
+                    <Input
+                      type="number"
+                      step="0.01"
+                      min="0.01"
+                      max={Number(resellQty) * Number(resellBuyPrice) || undefined}
+                      required
+                      placeholder={t('sessions.amountPaidTodayPlaceholder')}
+                      value={resellPaidAmountNow}
+                      onChange={(e) => setResellPaidAmountNow(e.target.value)}
+                      className="bg-white border-amber-300 h-10 text-xs font-mono font-bold text-[#2C1B10] focus:ring-amber-500"
+                    />
+                  </div>
+                )}
+
+                {/* 4. Live Cost Preview & Action Buttons */}
+                <div className="bg-white p-3.5 rounded-xl border border-[#EDE4D5] flex flex-col gap-3.5">
+                  <div className="flex items-center justify-between gap-3 text-xs border-b border-[#F4ECE1] pb-2.5">
+                    <div>
+                      <span className="text-[10px] uppercase font-bold text-[#8C7361] block">{t('sessions.totalBatchCost')}</span>
+                      <span className="font-mono font-extrabold text-sm sm:text-base text-[#4A2E1B]">
+                        {(Number(resellQty) * Number(resellBuyPrice) || 0).toFixed(2)} ETB
+                      </span>
+                    </div>
+                    {Number(resellSellPrice) > 0 && (
+                      <div className="text-right">
+                        <span className="text-[10px] uppercase font-bold text-[#8C7361] block">{t('sessions.estRevenue')}</span>
+                        <span className="font-mono font-extrabold text-sm sm:text-base text-emerald-700">
+                          {(Number(resellQty) * Number(resellSellPrice) || 0).toFixed(2)} ETB
+                        </span>
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="flex flex-col gap-2 w-full">
+                    <Button
+                      type="submit"
+                      disabled={isLoggingResell}
+                      className="bg-indigo-700 hover:bg-indigo-800 text-white rounded-xl text-xs font-bold h-11 w-full shadow-xs flex items-center justify-center text-center"
+                    >
+                      {isLoggingResell ? (t("common.loading") || "Saving...") : (t("sessions.saveResellDelivery") || "Save Resell Delivery")}
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      onClick={() => setIsResellFormOpen(false)}
+                      className="border-[#EDE4D5] text-[#8C7361] hover:text-[#4A2E1B] rounded-xl text-xs h-10 w-full font-bold hover:bg-[#FAF6F0]"
+                    >
+                      {t("common.cancel")}
+                    </Button>
+                  </div>
+                </div>
+              </form>
+            </div>
+          )}
+
+          {supplierDeliveries.length === 0 ? (
+            <div className="text-center py-6 border border-dashed border-[#EDE4D5] rounded-xl text-xs text-[#8C7361]">
+              No resell deliveries logged during this session. Click "Log Resell Delivery" to record supplier purchases.
+            </div>
+          ) : (
+            <>
+              {/* Mobile Cards View (< md) */}
+              <div className="space-y-2.5 block md:hidden">
+                {supplierDeliveries.map((del) => {
+                  const netQty = Math.max(0, del.quantityReceived - (del.returnedQuantity || 0));
+                  const cost = netQty * Number(del.unitBuyPrice);
+                  const paid = Number(del.paidAmount || 0);
+                  const rem = Math.max(0, cost - paid);
+                  const isFullyPaid = rem <= 0.001 && cost > 0;
+                  const isPartial = !isFullyPaid && paid > 0;
+
+                  return (
+                    <div key={del.id} className="bg-[#FAF6F0] p-3.5 rounded-xl border border-[#EDE4D5] space-y-2">
+                      <div className="flex items-start justify-between gap-2">
+                        <div>
+                          <h4 className="font-extrabold text-xs text-[#2C1B10]">{del.product?.name || "Resell Product"}</h4>
+                          <p className="text-[10px] text-[#8C7361] font-medium">Supplier: {del.supplier?.name || "Supplier"}</p>
+                        </div>
+                        {isFullyPaid ? (
+                          <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-200">
+                            ✓ Paid
+                          </span>
+                        ) : isPartial ? (
+                          <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 text-amber-800 border border-amber-200">
+                            ⏳ Partial (Rem: {rem.toFixed(2)} ETB)
+                          </span>
+                        ) : (
+                          <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-rose-100 text-rose-800 border border-rose-200">
+                            ⚠ Credit ({cost.toFixed(2)} ETB)
+                          </span>
+                        )}
+                      </div>
+                      <div className="grid grid-cols-3 gap-2 pt-2 border-t border-[#EDE4D5] text-[11px]">
+                        <div>
+                          <span className="text-[9px] uppercase font-bold text-[#8C7361] block">{t('common.quantity') || 'Qty'}</span>
+                          <span className="font-mono font-extrabold text-amber-800">{del.quantityReceived} {del.product?.unitType || "Pcs"}</span>
+                        </div>
+                        <div>
+                          <span className="text-[9px] uppercase font-bold text-[#8C7361] block">{t("sessions.buyPrice")}</span>
+                          <span className="font-mono">{Number(del.unitBuyPrice).toFixed(2)}</span>
+                        </div>
+                        <div>
+                          <span className="text-[9px] uppercase font-bold text-[#8C7361] block">{t("sessions.sellPrice")}</span>
+                          <span className="font-mono font-bold text-[#2C1B10]">{Number(del.unitSellPrice).toFixed(2)}</span>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+
+              {/* Desktop Table (>= md) */}
+              <div className="hidden md:block overflow-x-auto border border-[#EDE4D5] rounded-xl">
+                <table className="w-full text-left text-xs">
+                  <thead className="bg-[#FAF6F0] border-b border-[#EDE4D5]">
+                    <tr>
+                      <th className="p-3 font-extrabold text-[#2C1B10]">{t('suppliers.title') || 'Supplier'}</th>
+                      <th className="p-3 font-extrabold text-[#2C1B10]">{t("sessions.resellProduct")}</th>
+                      <th className="p-3 font-extrabold text-[#2C1B10]">{t("sessions.qtyReceived")}</th>
+                      <th className="p-3 font-extrabold text-[#2C1B10]">{t("sessions.buyPrice")}</th>
+                      <th className="p-3 font-extrabold text-[#2C1B10]">{t("sessions.sellPrice")}</th>
+                      <th className="p-3 font-extrabold text-[#2C1B10]">{t("sessions.paymentStatus")}</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-[#F4ECE1]">
+                    {supplierDeliveries.map((del) => {
+                      const netQty = Math.max(0, del.quantityReceived - (del.returnedQuantity || 0));
+                      const cost = netQty * Number(del.unitBuyPrice);
+                      const paid = Number(del.paidAmount || 0);
+                      const rem = Math.max(0, cost - paid);
+                      const isFullyPaid = rem <= 0.001 && cost > 0;
+                      const isPartial = !isFullyPaid && paid > 0;
+
+                      return (
+                        <tr key={del.id}>
+                          <td className="p-3 font-bold text-[#2C1B10]">{del.supplier?.name || "Supplier"}</td>
+                          <td className="p-3 font-semibold text-zinc-900">{del.product?.name || "Product"}</td>
+                          <td className="p-3 font-mono font-bold text-amber-700">{del.quantityReceived} {del.product?.unitType || "Pcs"}</td>
+                          <td className="p-3 font-mono">{Number(del.unitBuyPrice).toFixed(2)} ETB</td>
+                          <td className="p-3 font-mono">{Number(del.unitSellPrice).toFixed(2)} ETB</td>
+                          <td className="p-3">
+                            {isFullyPaid ? (
+                              <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-200">
+                                ✓ Paid
+                              </span>
+                            ) : isPartial ? (
+                              <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 text-amber-800 border border-amber-200">
+                                ⏳ Partial (Rem: {rem.toFixed(2)} ETB)
+                              </span>
+                            ) : (
+                              <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-rose-100 text-rose-800 border border-rose-200">
+                                ⚠ Credit ({cost.toFixed(2)} ETB)
+                              </span>
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </>
+          )}
+        </div>
+
+        {/* Section 5: Leftover Product Counts (Adari) & Damage */}
+        <div className="bg-white border border-[#EDE4D5] rounded-2xl p-4 sm:p-6 shadow-sm">
+          <h2 className="text-base sm:text-lg font-extrabold text-[#2C1B10] mb-1 flex items-center gap-2">
+            <PackageCheck className="w-5 h-5 text-amber-600 shrink-0" />
+            <span>{t("sessions.productLeftoversAdariAndLosses") || "Product Leftovers (Adari) & Losses"}</span>
+          </h2>
+          <p className="text-xs text-[#8C7361] mb-4">
+            {t("sessions.productLeftoversDesc") || "Enter the remaining unsold product quantities and any damaged items. Unsold leftovers cannot exceed total stock available in this session."}
+          </p>
+
+          {/* Mobile Leftovers Touch Cards (< md) */}
+          <div className="space-y-3 block md:hidden">
+            {products.map((p) => {
+              const val = leftovers[p.id] || { quantityRemaining: "", damagedQuantity: "", damageReason: "" };
+              const availableStockSummary = (session as any)?.availableStockSummary || {};
+              const stockInfo = availableStockSummary[p.id];
+              const maxAvail = stockInfo ? stockInfo.maxAvailable : 999999;
+              const isOverMax = (Number(val.quantityRemaining) || 0) > maxAvail;
+
+              return (
+                <div
+                  key={p.id}
+                  className={`bg-[#FAF6F0] p-3.5 rounded-xl border transition-all space-y-3 ${
+                    isOverMax ? "border-rose-400 bg-rose-50/60 ring-1 ring-rose-400" : "border-[#EDE4D5]"
+                  }`}
+                >
+                  <div className="flex items-start justify-between gap-2">
+                    <div>
+                      <h4 className="font-extrabold text-xs text-[#2C1B10]">{p.name}</h4>
+                      <p className="text-[10px] text-[#8C7361]">{p.unitType || "Pieces"}</p>
+                    </div>
+                    <div className="text-right">
+                      <span className="text-[10px] font-bold text-[#8C7361] block">{t("sessions.maxAvailable")}</span>
+                      <span className="font-mono font-extrabold text-xs text-amber-800">
+                        {stockInfo ? stockInfo.maxAvailable : 0} Pcs
+                      </span>
+                    </div>
+                  </div>
+
+                  {stockInfo && (
+                    <div className="text-[10px] text-[#8C7361] bg-white/70 px-2.5 py-1 rounded-lg border border-[#EDE4D5]">
+                      Stock: Produced/Delivered: <strong className="text-[#4A2E1B]">{stockInfo.producedQty + stockInfo.deliveredQty}</strong> • Sold: <strong className="text-[#4A2E1B]">{stockInfo.soldQty}</strong>
+                    </div>
+                  )}
+
+                  <div className="grid grid-cols-2 gap-2.5">
+                    <div>
+                      <label className="text-[10px] font-bold text-[#4A2E1B] block mb-1">{t("sessions.unsoldRemaining")}</label>
+                      <Input
+                        type="number"
+                        min="0"
+                        max={maxAvail}
+                        placeholder="0"
+                        value={val.quantityRemaining === 0 || val.quantityRemaining === "" ? "" : val.quantityRemaining}
+                        disabled={isViewOnly}
+                        onFocus={(e) => e.target.select()}
+                        onChange={(e) => handleLeftoverChange(p.id, "quantityRemaining", e.target.value)}
+                        className={`h-9 text-xs font-bold font-mono bg-white border-[#EDE4D5] disabled:opacity-80 placeholder:text-[#8C7361]/60 ${
+                          isOverMax ? "border-rose-500 bg-rose-50 text-rose-900 ring-1 ring-rose-500" : ""
+                        }`}
+                      />
+                    </div>
+
+                    <div>
+                      <label className="text-[10px] font-bold text-[#4A2E1B] block mb-1">{t("sessions.damagedPcs") || "Damaged (Pcs)"}</label>
+                      <Input
+                        type="number"
+                        min="0"
+                        placeholder="0"
+                        value={val.damagedQuantity === 0 || val.damagedQuantity === "" ? "" : val.damagedQuantity}
+                        disabled={isViewOnly}
+                        onFocus={(e) => e.target.select()}
+                        onChange={(e) => handleLeftoverChange(p.id, "damagedQuantity", e.target.value)}
+                        className="h-9 text-xs bg-white border-[#EDE4D5] font-mono disabled:opacity-80 placeholder:text-[#8C7361]/60"
+                      />
+                    </div>
+                  </div>
+
+                  {isOverMax && (
+                    <p className="text-[10px] font-extrabold text-rose-600">
+                      ⚠️ Exceeds max available ({maxAvail} Pcs)
+                    </p>
+                  )}
+
+                  <div>
+                    <label className="text-[10px] font-bold text-[#8C7361] block mb-1">{t("sessions.damageReasonOptional") || "Damage Reason (Optional)"}</label>
+                    <Input
+                      type="text"
+                      placeholder={t('sessions.damageReasonPlaceholder')}
+                      value={val.damageReason}
+                      disabled={isViewOnly}
+                      onChange={(e) => handleLeftoverChange(p.id, "damageReason", e.target.value)}
+                      className="h-9 text-xs bg-white border-[#EDE4D5] disabled:opacity-80"
+                    />
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
+          {/* Desktop Leftovers Table (>= md) */}
+          <div className="hidden md:block overflow-x-auto border border-[#EDE4D5] rounded-xl">
+            <table className="w-full text-left text-xs">
+              <thead className="bg-[#FAF6F0] border-b border-[#EDE4D5]">
+                <tr>
+                  <th className="p-3 font-extrabold text-[#2C1B10]">{t("sessions.productNameAndSessionStock") || "Product Name & Session Stock"}</th>
+                  <th className="p-3 font-extrabold text-[#2C1B10] w-48">{t("sessions.unsoldRemainingPcs") || "Unsold Remaining (Pcs)"}</th>
+                  <th className="p-3 font-extrabold text-[#2C1B10] w-36">{t("sessions.damagedPcs") || "Damaged (Pcs)"}</th>
+                  <th className="p-3 font-extrabold text-[#2C1B10]">{t("sessions.damageReason")}</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-[#F4ECE1]">
+                {products.map((p) => {
+                  const val = leftovers[p.id] || { quantityRemaining: "", damagedQuantity: "", damageReason: "" };
+                  const availableStockSummary = (session as any)?.availableStockSummary || {};
+                  const stockInfo = availableStockSummary[p.id];
+                  const maxAvail = stockInfo ? stockInfo.maxAvailable : 999999;
+                  const isOverMax = (Number(val.quantityRemaining) || 0) > maxAvail;
+
+                  return (
+                    <tr key={p.id} className={isOverMax ? "bg-rose-50/50" : ""}>
+                      <td className="p-3">
+                        <div className="font-extrabold text-xs text-[#2C1B10]">{p.name}</div>
+                        <div className="text-[10px] font-semibold text-[#8C7361] mt-0.5">
+                          {t('sessions.maxAvailableStock') || 'Max Available Stock'}: <strong className="text-amber-800 font-mono font-bold">{stockInfo ? stockInfo.maxAvailable : 0} {p.unitType || 'Pcs'}</strong>
+                          {stockInfo && (
+                            <span> (Produced/Delivered: {stockInfo.producedQty + stockInfo.deliveredQty}, Sold: {stockInfo.soldQty})</span>
+                          )}
+                        </div>
+                      </td>
+                      <td className="p-3">
+                        <Input
+                          type="number"
+                          min="0"
+                          max={maxAvail}
+                          placeholder="0"
+                          value={val.quantityRemaining === 0 || val.quantityRemaining === "" ? "" : val.quantityRemaining}
+                          disabled={isViewOnly}
+                          onFocus={(e) => e.target.select()}
+                          onChange={(e) => handleLeftoverChange(p.id, "quantityRemaining", e.target.value)}
+                          className={`h-8 text-xs font-bold font-mono bg-white border-[#EDE4D5] disabled:opacity-80 placeholder:text-[#8C7361]/60 ${
+                            isOverMax ? "border-rose-500 bg-rose-50 text-rose-900 ring-1 ring-rose-500" : ""
+                          }`}
+                        />
+                        {isOverMax && (
+                          <span className="text-[10px] font-extrabold text-rose-600 block mt-1">
+                            ⚠️ Exceeds max available ({maxAvail} Pcs)
+                          </span>
+                        )}
+                      </td>
+                      <td className="p-3">
+                        <Input
+                          type="number"
+                          min="0"
+                          placeholder="0"
+                          value={val.damagedQuantity === 0 || val.damagedQuantity === "" ? "" : val.damagedQuantity}
+                          disabled={isViewOnly}
+                          onFocus={(e) => e.target.select()}
+                          onChange={(e) => handleLeftoverChange(p.id, "damagedQuantity", e.target.value)}
+                          className="h-8 text-xs bg-white border-[#EDE4D5] disabled:opacity-80 placeholder:text-[#8C7361]/60"
+                        />
+                      </td>
+                      <td className="p-3">
+                        <Input
+                          type="text"
+                          placeholder={t('sessions.damageShortReasonPlaceholder')}
+                          value={val.damageReason}
+                          disabled={isViewOnly}
+                          onChange={(e) => handleLeftoverChange(p.id, "damageReason", e.target.value)}
+                          className="h-8 text-xs bg-white border-[#EDE4D5] disabled:opacity-80"
+                        />
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        {/* Section 6: Notes & Submission Controls */}
+        <div className="bg-white border border-[#EDE4D5] rounded-2xl p-4 sm:p-6 shadow-sm space-y-4">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-[#F4ECE1] pb-3">
+            <div>
+              <h2 className="text-sm font-extrabold text-[#2C1B10] flex items-center gap-2">
+                <FileText className="w-4 h-4 text-[#E87A18]" /> Cash Drawer & Daily Exchange Log (Shift Draft)
+              </h2>
+              <p className="text-xs text-[#8C7361] mt-0.5">
+                Log cash-to-digital conversions, bill exchanges, counter change floats, and mid-shift cash counts.
+              </p>
+            </div>
+            {session.status !== "CLOSED" && (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={handleSaveDraft}
+                disabled={isSavingDraft || isViewOnly}
+                className="border-amber-300 text-amber-800 hover:bg-amber-50 rounded-xl text-xs font-bold shrink-0 self-start sm:self-auto"
+              >
+                <Save className="w-3.5 h-3.5 mr-1 text-amber-600" />
+                {isSavingDraft ? "Saving..." : "Save Draft Log"}
+              </Button>
+            )}
+          </div>
+
+          <div>
+            <textarea
+              rows={3}
+              placeholder={t('sessions.exchangeLogPlaceholder')}
+              value={exchangeLogs}
+              disabled={isViewOnly}
+              onChange={(e) => setExchangeLogs(e.target.value)}
+              className="w-full bg-[#FAF6F0] border border-[#EDE4D5] rounded-xl p-3 text-xs disabled:opacity-80"
+            />
+          </div>
+
+          <div>
+            <label className="text-xs font-bold text-[#2C1B10] block mb-1">{t('sessions.closingNotesRemarks')}</label>
+            <textarea
+              rows={2}
+              placeholder={t('sessions.staffRemarksPlaceholder')}
+              value={notes}
+              disabled={isViewOnly}
+              onChange={(e) => setNotes(e.target.value)}
+              className="w-full bg-[#FAF6F0] border border-[#EDE4D5] rounded-xl p-3 text-xs disabled:opacity-80"
+            />
+          </div>
+
+          <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 pt-4 border-t border-[#F4ECE1]">
+            <Button
+              variant="outline"
+              onClick={() => router.push("/daily-sessions")}
+              className="w-full sm:w-auto order-last sm:order-first"
+            >
+              {t("common.cancel")}
+            </Button>
+
+            <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2.5">
+              {/* Save Draft Progress throughout shift */}
+              {session.status !== "CLOSED" && (
+                <Button
+                  type="button"
+                  onClick={handleSaveDraft}
+                  loading={isSavingDraft}
+                  loadingText={t("sessions.savingDraftBtn")}
+                  disabled={isViewOnly}
+                  variant="outline"
+                  className="border-amber-400 text-amber-900 bg-amber-50 hover:bg-amber-100 justify-center"
+                >
+                  <Save className="w-4 h-4 mr-1.5 text-amber-700" />
+                  {t("sessions.btnSaveDraftClose")}
+                </Button>
+              )}
+
+              {/* Save Edits without changing status */}
+              {(session.status !== "CLOSED" || isOwner) && (
+                <Button
+                  onClick={handleSaveEdits}
+                  loading={isSubmitting}
+                  disabled={isViewOnly}
+                  variant="brand"
+                  className="justify-center"
+                >
+                  <Save className="w-4 h-4 mr-1.5" /> {session.status === "CLOSED" ? "Save Direct Changes" : t("common.save")}
+                </Button>
+              )}
+
+              {/* Submit for Owner Approval (Admin & Owner when session is OPEN) */}
+              {session.status === "OPEN" && (
+                <Button
+                  onClick={handleSubmitClose}
+                  loading={isSubmitting}
+                  disabled={isViewOnly}
+                  className="bg-amber-600 hover:bg-amber-700 text-white font-bold justify-center"
+                >
+                  <Lock className="w-4 h-4 mr-1.5" /> Submit for Approval
+                </Button>
+              )}
+
+              {/* Owner Finalize & Approve */}
+              {isOwner && session.status !== "CLOSED" && (
+                <Button
+                  onClick={handleFinalizeApprove}
+                  loading={isSubmitting}
+                  variant="success"
+                  className="justify-center"
+                >
+                  <CheckCircle2 className="w-4 h-4 mr-1.5" /> {t("sessions.btnFinalizeClose")}
+                </Button>
+              )}
+
+              {/* Owner Reopen / Reject */}
+              {isOwner && (session.status === "CLOSE_PENDING" || session.status === "CLOSED") && (
+                <Button
+                  onClick={handleReopenSession}
+                  loading={isSubmitting}
+                  variant="destructiveOutline"
+                  className="justify-center"
+                >
+                  <RotateCcw className="w-4 h-4 mr-1.5" /> {session.status === "CLOSED" ? "Reopen Session for Admin" : "Reject to OPEN"}
+                </Button>
+              )}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <ConfirmModal
+        isOpen={showDiscardModal}
+        onClose={cancelDiscard}
+        onConfirm={confirmDiscard}
+        title={t("products.unsavedModalTitle")}
+        description={t("products.unsavedModalDesc")}
+        confirmText={t("products.discardChangesBtn")}
+        cancelText={t("products.keepEditingBtn")}
+        variant="warning"
+      />
+    </DashboardLayout>
+  );
+}

@@ -1,0 +1,128 @@
+import { Router } from 'express';
+import { prisma } from '../lib/prisma.js';
+import { utcDayRangeInclusive } from '../lib/businessDate.js';
+import { authMiddleware, requireRole, type AuthRequest } from '../middleware/auth.js';
+
+function decimalToNum(v: unknown): number {
+  if (v == null) return 0;
+  if (typeof v === 'number') return v;
+  if (typeof v === 'string') return parseFloat(v);
+  return 0;
+}
+
+export const supplierDeliveriesRouter = Router();
+supplierDeliveriesRouter.use(authMiddleware);
+
+supplierDeliveriesRouter.get('/', async (req: AuthRequest, res) => {
+  const supplierId = req.query.supplierId as string | undefined;
+  const branchId = req.query.branchId as string | undefined;
+  const isPaid = req.query.isPaid as string | undefined;
+  const dateYmd = (req.query.date as string | undefined)?.trim();
+  const limit = Math.min(parseInt(req.query.limit as string) || 50, 200);
+  const where: any = {};
+  if (supplierId) where.supplierId = supplierId;
+  if (branchId) where.supplier = { branchId };
+  if (isPaid !== undefined) where.isPaid = isPaid === 'true';
+  if (dateYmd) {
+    const range = utcDayRangeInclusive(dateYmd);
+    if (range) {
+      where.createdAt = { gte: range.start, lte: range.end };
+    }
+  }
+  const list = await prisma.supplierDelivery.findMany({
+    where,
+    include: { supplier: true, product: true },
+    orderBy: { createdAt: 'desc' },
+    take: dateYmd ? 500 : limit,
+  });
+  res.json(list);
+});
+
+supplierDeliveriesRouter.get('/:id', async (req, res) => {
+  const delivery = await prisma.supplierDelivery.findUnique({
+    where: { id: req.params.id },
+    include: { supplier: true, product: true },
+  });
+  if (!delivery) return res.status(404).json({ error: 'Delivery not found' });
+  res.json(delivery);
+});
+
+supplierDeliveriesRouter.post('/', requireRole('OWNER', 'ADMIN', 'CASHIER', 'SAMBUSA_WORKER', 'BAKER', 'CAKE_WORKER'), async (req: AuthRequest, res) => {
+  const { supplierId, isPaid, items, productId, quantityReceived, unitBuyPrice, unitSellPrice, returnedQuantity } = req.body as Record<string, unknown>;
+  const isOwner = req.user?.role === 'OWNER';
+  
+  if (!supplierId) {
+    return res.status(400).json({ error: 'supplierId is required' });
+  }
+
+  // Support batch delivery items payload from multi-item UI
+  if (Array.isArray(items) && items.length > 0) {
+    const createdList = [];
+    for (const item of items) {
+      if (!item.productId || item.quantityReceived == null) continue;
+      const qty = typeof item.quantityReceived === 'number' ? item.quantityReceived : parseInt(String(item.quantityReceived), 10);
+      let sellPrice = isOwner ? decimalToNum(item.unitSellPrice) : 0;
+      if (!isOwner) {
+        const prod = await prisma.product.findUnique({ where: { id: item.productId } });
+        if (prod) sellPrice = Number(prod.basePrice);
+      }
+      const created = await prisma.supplierDelivery.create({
+        data: {
+          supplierId: supplierId as string,
+          productId: item.productId,
+          quantityReceived: qty,
+          unitBuyPrice: decimalToNum(item.unitBuyPrice),
+          unitSellPrice: sellPrice,
+          isPaid: Boolean(isPaid),
+          returnedQuantity: item.returnedQuantity != null ? parseInt(String(item.returnedQuantity), 10) : 0,
+        },
+        include: { supplier: true, product: true },
+      });
+      createdList.push(created);
+    }
+    return res.status(201).json(createdList);
+  }
+
+  // Support single item delivery payload
+  if (!productId || quantityReceived == null) {
+    return res.status(400).json({ error: 'supplierId, productId, and quantityReceived are required' });
+  }
+
+  const qty = typeof quantityReceived === 'number' ? quantityReceived : parseInt(String(quantityReceived), 10);
+  const delivery = await prisma.supplierDelivery.create({
+    data: {
+      supplierId: supplierId as string,
+      productId: productId as string,
+      quantityReceived: qty,
+      unitBuyPrice: decimalToNum(unitBuyPrice),
+      unitSellPrice: decimalToNum(unitSellPrice),
+      isPaid: Boolean(isPaid),
+      returnedQuantity: returnedQuantity != null ? parseInt(String(returnedQuantity), 10) : 0,
+    },
+    include: { supplier: true, product: true },
+  });
+  return res.status(201).json(delivery);
+});
+
+supplierDeliveriesRouter.patch('/:id', requireRole('OWNER', 'ADMIN', 'CASHIER'), async (req, res) => {
+  const { isPaid, returnedQuantity } = req.body as { isPaid?: boolean; returnedQuantity?: number };
+  const delivery = await prisma.supplierDelivery.update({
+    where: { id: req.params.id },
+    data: {
+      ...(isPaid !== undefined && { isPaid }),
+      ...(returnedQuantity !== undefined && { returnedQuantity }),
+    },
+    include: { supplier: true, product: true },
+  });
+  res.json(delivery);
+});
+
+supplierDeliveriesRouter.delete('/:id', requireRole('OWNER', 'ADMIN', 'CASHIER'), async (req, res) => {
+  const delivery = await prisma.supplierDelivery.findUnique({
+    where: { id: req.params.id },
+  });
+  if (!delivery) return res.status(404).json({ error: 'Delivery not found' });
+
+  await prisma.supplierDelivery.delete({ where: { id: req.params.id } });
+  res.status(204).send();
+});

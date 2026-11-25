@@ -1,0 +1,155 @@
+'use client';
+
+import React, { useEffect, useState } from 'react';
+import { useAuth } from '@/context/AuthContext';
+import { useLanguage } from '@/context/LanguageContext';
+import { useRouter } from 'next/navigation';
+import { ChefHat, ShoppingBag, Flame, Store, LogOut, ArrowRight, Boxes } from 'lucide-react';
+import { Button } from '@/components/ui/button';
+import NotificationBell from '@/components/NotificationBell';
+
+export default function MobileWorkspaceSelector() {
+  const { user, isAuthenticated, isLoading, logout } = useAuth();
+  const { t } = useLanguage();
+  const router = useRouter();
+
+  useEffect(() => {
+    if (!isLoading && !isAuthenticated) {
+      router.push('/login');
+    }
+  }, [isLoading, isAuthenticated, router]);
+
+  if (isLoading || !user) {
+    return (
+      <div className="min-h-screen bg-zinc-950 text-white flex items-center justify-center font-medium">
+        {t("mobile.loadingWorkspace")}
+      </div>
+    );
+  }
+
+  // Auto-route based on staff role
+  const handleAutoRoute = () => {
+    if (user.role === 'CASHIER') router.push('/mobile/cashier');
+    else if (user.role === 'STOCK_KEEPER') router.push('/mobile/storekeeper');
+    else if (user.role === 'BAKER' || user.role === 'CAKE_WORKER') router.push('/mobile/baker');
+    else if (user.role === 'SAMBUSA_WORKER') router.push('/mobile/sambusa');
+    else router.push('/mobile/cashier');
+  };
+
+  return (
+    <div className="min-h-screen bg-zinc-950 text-white flex flex-col justify-between p-6">
+      {/* Top Header */}
+      <div className="flex justify-between items-center pt-2">
+        <div className="flex items-center space-x-3">
+          <div className="w-10 h-10 bg-amber-500 rounded-xl flex items-center justify-center text-zinc-950 font-bold shadow-lg shadow-amber-500/20">
+            <Store className="w-5 h-5" />
+          </div>
+          <div>
+            <h1 className="text-lg font-extrabold tracking-tight">{t("mobile.mobileWorkspaceTitle")}</h1>
+            <p className="text-xs text-zinc-400">{user.fullName} ({user.role})</p>
+          </div>
+        </div>
+        <div className="flex items-center space-x-2">
+          <NotificationBell />
+          <Button variant="ghost" size="icon" onClick={logout} className="text-zinc-400 hover:text-white hover:bg-zinc-900">
+            <LogOut className="w-5 h-5" />
+          </Button>
+        </div>
+      </div>
+
+      {/* Role Selection Cards */}
+      <div className="my-auto space-y-4 py-8">
+        <p className="text-xs font-semibold uppercase tracking-wider text-amber-400 text-center mb-2">
+          {t("mobile.selectMobileStation")}
+        </p>
+
+        {/* Cashier Station Card */}
+        <button
+          onClick={() => router.push('/mobile/cashier')}
+          className="w-full bg-zinc-900 border border-zinc-800 hover:border-amber-500/50 p-5 rounded-2xl flex items-center justify-between text-left transition-all active:scale-98 shadow-md"
+        >
+          <div className="flex items-center space-x-4">
+            <div className="w-12 h-12 bg-emerald-500/10 text-emerald-400 rounded-xl flex items-center justify-center border border-emerald-500/20">
+              <ShoppingBag className="w-6 h-6" />
+            </div>
+            <div>
+              <h3 className="font-bold text-base text-white">{t("mobile.cashierStationTitle")}</h3>
+              <p className="text-xs text-zinc-400 mt-0.5">{t("mobile.cashierStationSubtitle")}</p>
+            </div>
+          </div>
+          <ArrowRight className="w-5 h-5 text-zinc-500" />
+        </button>
+
+        {/* Baker Station Card */}
+        <button
+          onClick={() => router.push('/mobile/baker')}
+          className="w-full bg-zinc-900 border border-zinc-800 hover:border-amber-500/50 p-5 rounded-2xl flex items-center justify-between text-left transition-all active:scale-98 shadow-md"
+        >
+          <div className="flex items-center space-x-4">
+            <div className="w-12 h-12 bg-amber-500/10 text-amber-400 rounded-xl flex items-center justify-center border border-amber-500/20">
+              <ChefHat className="w-6 h-6" />
+            </div>
+            <div>
+              <h3 className="font-bold text-base text-white">
+                {user.role === 'CAKE_WORKER' ? t("mobile.cakeStationTitle") : t("mobile.bakerStationTitle")}
+              </h3>
+              <p className="text-xs text-zinc-400 mt-0.5">
+                {user.role === 'CAKE_WORKER'
+                  ? t("mobile.cakeStationSubtitle")
+                  : t("mobile.bakerStationSubtitle")}
+              </p>
+            </div>
+          </div>
+          <ArrowRight className="w-5 h-5 text-zinc-500" />
+        </button>
+
+        {/* Sambusa Station Card */}
+        <button
+          onClick={() => router.push('/mobile/sambusa')}
+          className="w-full bg-zinc-900 border border-zinc-800 hover:border-amber-500/50 p-5 rounded-2xl flex items-center justify-between text-left transition-all active:scale-98 shadow-md"
+        >
+          <div className="flex items-center space-x-4">
+            <div className="w-12 h-12 bg-rose-500/10 text-rose-400 rounded-xl flex items-center justify-center border border-rose-500/20">
+              <Flame className="w-6 h-6" />
+            </div>
+            <div>
+              <h3 className="font-bold text-base text-white">{t("mobile.sambusaStationTitle")}</h3>
+              <p className="text-xs text-zinc-400 mt-0.5">{t("mobile.sambusaStationSubtitle")}</p>
+            </div>
+          </div>
+          <ArrowRight className="w-5 h-5 text-zinc-500" />
+        </button>
+
+        {/* Storekeeper Station Card */}
+        <button
+          onClick={() => router.push('/mobile/storekeeper')}
+          className="w-full bg-zinc-900 border border-zinc-800 hover:border-amber-500/50 p-5 rounded-2xl flex items-center justify-between text-left transition-all active:scale-98 shadow-md"
+        >
+          <div className="flex items-center space-x-4">
+            <div className="w-12 h-12 bg-amber-500/10 text-amber-400 rounded-xl flex items-center justify-center border border-amber-500/20">
+              <Boxes className="w-6 h-6" />
+            </div>
+            <div>
+              <h3 className="font-bold text-base text-white">
+                {t("sidebar.stock") || "Storekeeper Station"}
+              </h3>
+              <p className="text-xs text-zinc-400 mt-0.5">
+                {user.role === 'STOCK_KEEPER' 
+                  ? "የዕቃ ግብአት፣ ወጪና ስህተት ማስተካከያ ጣቢያ" 
+                  : "Warehouse stock intake & issuance station"}
+              </p>
+            </div>
+          </div>
+          <ArrowRight className="w-5 h-5 text-zinc-500" />
+        </button>
+      </div>
+
+      {/* Auto Launch Button */}
+      <div className="pb-4">
+        <Button onClick={handleAutoRoute} className="w-full h-14 bg-amber-500 hover:bg-amber-400 text-zinc-950 font-bold text-base rounded-xl shadow-lg shadow-amber-500/20">
+          {t("mobile.launchStationBtn", { role: user.role })}
+        </Button>
+      </div>
+    </div>
+  );
+}

@@ -1,0 +1,296 @@
+'use client';
+
+import React, { useState } from 'react';
+import Link from 'next/link';
+import { api } from '@/lib/axios';
+import { useAuth } from '@/context/AuthContext';
+import { useLanguage } from '@/context/LanguageContext';
+import LanguageSelector from '@/components/LanguageSelector';
+import { Lock, Phone, Loader2, Store, Eye, EyeOff, Camera, Clock, ShieldCheck } from 'lucide-react';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '@/components/ui/card';
+import { Label } from '@/components/ui/label';
+
+export default function LoginPage() {
+  const [phone, setPhone] = useState('');
+  const [password, setPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
+  const [error, setError] = useState('');
+  const [isLoading, setIsLoading] = useState(false);
+
+  // Forgot password dialog state
+  const [isResetOpen, setIsResetOpen] = useState(false);
+  const [resetPhone, setResetPhone] = useState('');
+  const [resetMsg, setResetMsg] = useState('');
+  const [resetError, setResetError] = useState('');
+  const [isResetSubmitting, setIsResetSubmitting] = useState(false);
+
+  const { login } = useAuth();
+  const { t, l } = useLanguage();
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setIsLoading(true);
+    setError('');
+
+    try {
+      const { data } = await api.post('/auth/login', { phone: phone.trim(), password });
+      login(data);
+      // Keep isLoading true while navigating
+    } catch (err: any) {
+      setIsLoading(false);
+      if (err.code === 'ECONNABORTED' || err.message?.includes('timeout')) {
+        setError('Connection timed out. Unable to reach backend server.');
+      } else if (err.code === 'ERR_NETWORK') {
+        setError('Network error: Unable to connect to the backend server. Please verify backend server is running.');
+      } else {
+        setError(err.response?.data?.error || err.message || 'Failed to login. Please try again.');
+      }
+    }
+  };
+
+  const handleResetSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setIsResetSubmitting(true);
+    setResetMsg('');
+    setResetError('');
+
+    try {
+      const { data } = await api.post('/auth/forgot-password', { phone: resetPhone });
+      setResetMsg(data.message || 'Request submitted successfully.');
+    } catch (err: any) {
+      setResetError(err.response?.data?.error || 'Failed to submit password reset request.');
+    } finally {
+      setIsResetSubmitting(false);
+    }
+  };
+
+  return (
+    <div className="min-h-screen flex items-center justify-center bg-[#FAF7EE] p-2.5 xs:p-4 font-sans relative">
+      {/* Floating Language Selector at top-right */}
+      <div className="absolute top-2.5 right-2.5 xs:top-4 xs:right-4 sm:top-6 sm:right-6 z-20">
+        <LanguageSelector variant="header" />
+      </div>
+
+      <Card className="w-full max-w-md shadow-[0_10px_30px_rgba(74,46,27,0.08)] border border-[#EDE4D5] bg-[#FFFDF8] rounded-2xl xs:rounded-3xl overflow-hidden mt-8 xs:mt-0">
+        <CardHeader className="space-y-3 xs:space-y-4 text-center pt-6 xs:pt-8 pb-3 xs:pb-4">
+          <div className="mx-auto w-14 h-14 xs:w-16 xs:h-16 bg-[#E87A18] rounded-2xl flex items-center justify-center shadow-lg shadow-[#E87A18]/25">
+            <Store className="w-7 h-7 xs:w-8 xs:h-8 text-white" />
+          </div>
+          <div>
+            <CardTitle className="text-xl xs:text-2xl font-extrabold tracking-tight text-[#2C1B10]">
+              {l('ሐበሻ ዳቦ ቤት', 'Dabboo Habashaa', 'Habesha Bakery')}
+            </CardTitle>
+            <CardDescription className="pt-1 xs:pt-2 text-xs font-medium text-[#8C7361]">
+              {t('auth.signInSubtitle')}
+            </CardDescription>
+          </div>
+        </CardHeader>
+
+        <CardContent className="px-3.5 xs:px-6 sm:px-8 pb-5 xs:pb-6">
+          <form onSubmit={handleSubmit} className="space-y-4 xs:space-y-5">
+            {error && (
+              <div className="p-3 text-xs font-semibold text-rose-700 bg-rose-50 border border-rose-200 rounded-xl flex items-center justify-center text-center">
+                {error}
+              </div>
+            )}
+
+            <div className="space-y-4">
+              <div className="space-y-2">
+                <Label htmlFor="phone" className="text-xs font-bold uppercase tracking-wider text-[#4A2E1B]">{t('auth.phoneLabel')}</Label>
+                <div className="relative">
+                  <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-[#8C7361]">
+                    <Phone className="h-4 w-4" />
+                  </div>
+                  <Input
+                    id="phone"
+                    type="text"
+                    placeholder={t('auth.phonePlaceholder')}
+                    className="pl-10 h-12 rounded-2xl focus-visible:ring-[#E87A18] focus-visible:border-transparent bg-[#F4ECE1]/50 text-[#2C1B10] placeholder:text-[#A48F7F] border-[#EDE4D5] focus:bg-white transition-all font-medium"
+                    value={phone}
+                    onChange={(e) => setPhone(e.target.value)}
+                    required
+                  />
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <Label htmlFor="password" className="text-xs font-bold uppercase tracking-wider text-[#4A2E1B]">{t('auth.passwordLabel')}</Label>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setResetPhone(phone);
+                      setResetMsg('');
+                      setResetError('');
+                      setIsResetOpen(true);
+                    }}
+                    className="text-xs text-[#E87A18] hover:text-[#d46d13] font-bold underline underline-offset-2 transition-colors"
+                  >
+                    {t('auth.forgotPassword')}
+                  </button>
+                </div>
+                <div className="relative">
+                  <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-[#8C7361]">
+                    <Lock className="h-4 w-4" />
+                  </div>
+                  <Input
+                    id="password"
+                    type={showPassword ? 'text' : 'password'}
+                    placeholder={t('auth.passwordPlaceholder')}
+                    className="pl-10 pr-11 h-12 rounded-2xl focus-visible:ring-[#E87A18] focus-visible:border-transparent bg-[#F4ECE1]/50 text-[#2C1B10] placeholder:text-[#A48F7F] border-[#EDE4D5] focus:bg-white transition-all font-medium"
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    required
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowPassword(!showPassword)}
+                    className="absolute inset-y-0 right-0 pr-3.5 flex items-center text-[#8C7361] hover:text-[#2C1B10] focus:outline-none transition-colors"
+                    aria-label={showPassword ? 'Hide password' : 'Show password'}
+                    tabIndex={-1}
+                  >
+                    {showPassword ? (
+                      <EyeOff className="h-4 w-4" />
+                    ) : (
+                      <Eye className="h-4 w-4" />
+                    )}
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <Button
+              type="submit"
+              size="lg"
+              disabled={isLoading}
+              loading={isLoading}
+              loadingText={t('auth.signingInButton')}
+              className="w-full text-base font-extrabold shadow-lg shadow-[#E87A18]/25 mt-2"
+            >
+              {t('auth.signInButton')}
+            </Button>
+          </form>
+
+          {/* Quick Staff Face Scan Attendance Mode (Accessible before login) */}
+          <div className="mt-6 pt-5 border-t border-[#EDE4D5] text-center">
+            <div className="flex items-center justify-center gap-2 mb-2">
+              <span className="h-[1px] bg-[#EDE4D5] flex-1" />
+              <span className="text-[11px] font-black uppercase text-[#8C7361] tracking-wider px-2">
+                {l('የሠራተኞች የፊት ስካን መገኘት', 'Galmee Argama Hojjattootaa', 'Staff Face Scan Attendance')}
+              </span>
+              <span className="h-[1px] bg-[#EDE4D5] flex-1" />
+            </div>
+
+            <p className="text-[11px] text-[#8C7361] font-medium mb-3">
+              {l(
+                'ያለ ይለፍ-ቃል ስምዎን በመምረጥና በካሜራ ፎቶ ብቻ መግቢያና መውጫ መመዝገቢያ',
+                'Jecha icciitii malee maqaa filachuun suuraa fuulaan seensa fi ba\'iinsa galmeessaa',
+                'Select your name and verify via camera to clock in or out (No password required)'
+              )}
+            </p>
+
+            <Link
+              href="/attendance/kiosk"
+              className="w-full py-3 px-4 bg-gradient-to-r from-[#4A2E1B] to-[#3C2213] hover:from-[#5A3A23] hover:to-[#4A2E1B] text-white font-black rounded-xl shadow-md transition-all flex items-center justify-center gap-2.5 text-xs border border-[#5A3A23] active:scale-[0.99] group"
+            >
+              <Camera className="w-4 h-4 text-[#E87A18] group-hover:scale-110 transition-transform" />
+              <span>
+                {l(
+                  'የፊት ስካን መመዝገቢያ ክፈት',
+                  'Galmee Suuraa Fuulaa Bani',
+                  'Open Face Scan Attendance'
+                )}
+              </span>
+              <Clock className="w-3.5 h-3.5 text-[#F39C12]" />
+            </Link>
+          </div>
+        </CardContent>
+        <CardFooter className="flex justify-center text-xs font-medium text-[#8C7361] border-t border-[#EDE4D5] bg-[#F4ECE1]/30 py-4">
+          Secure connection to Habesha Bakery Management
+        </CardFooter>
+      </Card>
+
+      {/* Forgot Password Request Modal */}
+      {isResetOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-2.5 xs:p-4 bg-black/40 backdrop-blur-xs animate-in fade-in-0">
+          <div className="bg-[#FFFDF8] rounded-2xl xs:rounded-3xl p-4 xs:p-6 w-[calc(100vw-1.5rem)] max-w-md shadow-2xl border border-[#EDE4D5] space-y-4">
+            <div className="flex items-center justify-between pb-3 border-b border-[#EDE4D5]">
+              <h3 className="text-sm xs:text-base font-extrabold text-[#2C1B10]">{t('auth.requestPasswordReset')}</h3>
+              <button
+                onClick={() => setIsResetOpen(false)}
+                className="text-[#8C7361] hover:text-[#4A2E1B] text-lg font-bold p-1 transition-colors"
+              >
+                ✕
+              </button>
+            </div>
+
+            <p className="text-xs text-[#8C7361] font-medium leading-relaxed">
+              {t('auth.requestResetDesc')}
+            </p>
+
+            {resetMsg ? (
+              <div className="p-3.5 xs:p-4 bg-emerald-50 border border-emerald-200 rounded-2xl text-xs font-semibold text-emerald-800 text-center space-y-3">
+                <p>{resetMsg}</p>
+                <Button
+                  onClick={() => setIsResetOpen(false)}
+                  className="w-full bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold h-11 rounded-xl"
+                >
+                  {t('auth.returnToLogin')}
+                </Button>
+              </div>
+            ) : (
+              <form onSubmit={handleResetSubmit} className="space-y-4">
+                {resetError && (
+                  <div className="p-3 text-xs font-semibold text-rose-700 bg-rose-50 border border-rose-200 rounded-xl text-center">
+                    {resetError}
+                  </div>
+                )}
+
+                <div className="space-y-2">
+                  <Label htmlFor="reset-phone" className="text-xs font-bold uppercase tracking-wider text-[#4A2E1B]">{t('auth.phoneLabel')}</Label>
+                  <div className="relative">
+                    <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-[#8C7361]">
+                      <Phone className="h-4 w-4" />
+                    </div>
+                    <Input
+                      id="reset-phone"
+                      type="text"
+                      placeholder={t('auth.phonePlaceholder')}
+                      className="pl-10 h-11 rounded-xl bg-[#F4ECE1]/50 text-[#2C1B10] border-[#EDE4D5] focus:bg-white focus-visible:ring-[#E87A18]"
+                      value={resetPhone}
+                      onChange={(e) => setResetPhone(e.target.value)}
+                      required
+                    />
+                  </div>
+                </div>
+
+                <div className="flex flex-col xs:flex-row gap-2 pt-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="lg"
+                    onClick={() => setIsResetOpen(false)}
+                    className="w-full xs:flex-1"
+                  >
+                    {t('common.cancel')}
+                  </Button>
+                  <Button
+                    type="submit"
+                    size="lg"
+                    loading={isResetSubmitting}
+                    loadingText={t('common.loading')}
+                    className="w-full xs:flex-1"
+                  >
+                    {t('auth.requestResetButton')}
+                  </Button>
+                </div>
+              </form>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}

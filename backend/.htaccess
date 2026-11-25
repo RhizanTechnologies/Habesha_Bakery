@@ -1,0 +1,42 @@
+# ==============================================================================
+# Bakery ERP Backend - cPanel / LiteSpeed .htaccess Configuration
+# ==============================================================================
+
+# Enable Rewrite Engine
+RewriteEngine On
+
+# ------------------------------------------------------------------------------
+# 1. Prevent LiteSpeed Connection Timeout
+# ------------------------------------------------------------------------------
+<IfModule Litespeed>
+    RewriteRule .* - [E=noabort:1,E=nconnections:100]
+</IfModule>
+
+<IfModule mod_env.c>
+    SetEnv nokeepalive 1
+</IfModule>
+
+# ------------------------------------------------------------------------------
+# 2. Global CORS Header Configuration (Universal Access from Vercel & Mobile)
+# ------------------------------------------------------------------------------
+<IfModule mod_headers.c>
+    Header always set Access-Control-Allow-Origin "*"
+    Header always set Access-Control-Allow-Methods "GET, POST, PUT, DELETE, OPTIONS, PATCH"
+    Header always set Access-Control-Allow-Headers "Origin, X-Requested-With, Content-Type, Accept, Authorization, x-tenant-id, x-branch-id"
+    Header always set Access-Control-Max-Age "86400"
+</IfModule>
+
+# Fast preflight response for OPTIONS requests
+RewriteCond %{REQUEST_METHOD} OPTIONS
+RewriteRule ^(.*)$ - [R=204,L]
+
+# ------------------------------------------------------------------------------
+# 3. cPanel Node.js Application Selector
+# ------------------------------------------------------------------------------
+# DO NOT REMOVE. CLOUDLINUX PASSENGER CONFIGURATION BEGIN
+PassengerAppRoot "/home/koketbcd/erp-backend.koket-bakery.com"
+PassengerBaseURI "/"
+PassengerNodejs "/home/koketbcd/nodevenv/erp-backend.koket-bakery.com/20/bin/node"
+PassengerAppType node
+PassengerStartupFile dist/index.js
+# DO NOT REMOVE. CLOUDLINUX PASSENGER CONFIGURATION END
