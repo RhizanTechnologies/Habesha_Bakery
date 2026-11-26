@@ -100,6 +100,8 @@ export async function seed8Days() {
     const bMeg = await prisma.branch.create({
       data: {
         name: 'Megenagna Branch',
+        code: 'MEG-HUB',
+        isHub: true,
         address: 'Around Megenagna Square, Zefmesh Mall Area, Addis Ababa',
         companyId: comp.id,
       },
@@ -108,6 +110,8 @@ export async function seed8Days() {
     const bPia = await prisma.branch.create({
       data: {
         name: 'Piassa Branch',
+        code: 'PIA-SPOKE',
+        isHub: false,
         address: 'Churchill Road, Piassa, Addis Ababa',
         companyId: comp.id,
       },
