@@ -1369,6 +1369,29 @@ export class DailySessionsService {
       },
     });
 
+    // Reconcile physical shelf stock (BranchProductStock) with the verified leftover records upon session close
+    if (session.branchId && Array.isArray(leftoverRecords) && leftoverRecords.length > 0) {
+      for (const lr of leftoverRecords) {
+        const qty = typeof lr.actualQuantity === 'number' ? lr.actualQuantity : parseInt(String(lr.actualQuantity || 0), 10);
+        if (lr.productId && !isNaN(qty) && qty >= 0) {
+          await prisma.branchProductStock.upsert({
+            where: {
+              branchId_productId: {
+                branchId: session.branchId,
+                productId: lr.productId,
+              },
+            },
+            update: { availableStock: qty },
+            create: {
+              branchId: session.branchId,
+              productId: lr.productId,
+              availableStock: qty,
+            },
+          });
+        }
+      }
+    }
+
     const updated = await prisma.dailySession.findUnique({
       where: { id: sessionId },
       include: {

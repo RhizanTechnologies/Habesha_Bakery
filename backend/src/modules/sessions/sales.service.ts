@@ -123,14 +123,40 @@ export class SalesService {
       data.items = { create: saleItems };
     }
 
-    const sale = await prisma.sale.create({
-      data,
-      include: {
-        branch: { select: { id: true, name: true } },
-        session: { select: { id: true, date: true, branchId: true } },
-        user: { select: { id: true, fullName: true } },
-        items: { include: { product: true } },
-      },
+    const sale = await prisma.$transaction(async (tx) => {
+      const createdSale = await tx.sale.create({
+        data,
+        include: {
+          branch: { select: { id: true, name: true } },
+          session: { select: { id: true, date: true, branchId: true } },
+          user: { select: { id: true, fullName: true } },
+          items: { include: { product: true } },
+        },
+      });
+
+      // Decrement shelf stock (BranchProductStock) for each item sold at this branch
+      for (const item of saleItems) {
+        if (item.quantity > 0) {
+          await tx.branchProductStock.upsert({
+            where: {
+              branchId_productId: {
+                branchId: targetBranchId,
+                productId: item.productId,
+              },
+            },
+            update: {
+              availableStock: { decrement: item.quantity },
+            },
+            create: {
+              branchId: targetBranchId,
+              productId: item.productId,
+              availableStock: -item.quantity,
+            },
+          });
+        }
+      }
+
+      return createdSale;
     });
     return { data: sale };
   }

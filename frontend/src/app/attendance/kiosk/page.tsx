@@ -34,6 +34,12 @@ interface StaffMember {
   avatarUrl: string | null;
   branchId: string | null;
   branch?: { id: string; name: string; code: string } | null;
+  todayStatus?: {
+    hasPunchedIn: boolean;
+    hasPunchedOut: boolean;
+    punchInTime: string | null;
+    punchOutTime: string | null;
+  } | null;
 }
 
 interface Branch {
@@ -223,17 +229,19 @@ export default function AttendanceKioskPage() {
   }, []);
 
   // Fetch staff for chosen branch
+  const fetchStaffList = async (branchId: string) => {
+    if (!branchId) return;
+    const res = await apiRequest<StaffMember[] | { staff: StaffMember[] }>(`/attendance/staff-list?branchId=${branchId}`);
+    const list = Array.isArray(res.data) ? res.data : (res.data as any)?.staff || [];
+    setStaffList(list);
+  };
+
   useEffect(() => {
     if (!selectedBranchId) return;
     if (typeof window !== "undefined") {
       localStorage.setItem("kiosk_branch_id", selectedBranchId);
     }
-    async function loadStaff() {
-      const res = await apiRequest<StaffMember[] | { staff: StaffMember[] }>(`/attendance/staff-list?branchId=${selectedBranchId}`);
-      const list = Array.isArray(res.data) ? res.data : (res.data as any)?.staff || [];
-      setStaffList(list);
-    }
-    loadStaff();
+    fetchStaffList(selectedBranchId);
   }, [selectedBranchId]);
 
   // Initialize Camera
@@ -319,6 +327,70 @@ export default function AttendanceKioskPage() {
       return;
     }
 
+    // Client-side duplicate check: Prevent multiple PUNCH_IN for the same person
+    if (punchType === "PUNCH_IN" && selectedStaff.todayStatus?.hasPunchedIn) {
+      setStatusMessage({
+        type: "warning",
+        title: l("ቀደም ብለው ገብተዋል!", "Duraanuu Seentaniittu!", "Already Clocked In!"),
+        description: l(
+          `${selectedStaff.fullName} ዛሬ ቀደም ብለው የመግቢያ ሰዓት አስመዝግበዋል። ሁለተኛ መግቢያ መመዝገብ አይቻልም። ለመውጣት 'ስራ መውጫ' የሚለውን ይምረጡ።`,
+          `${selectedStaff.fullName} har'aaf duraanuu galmooftaniittu. Lammata seensa galmeessuun hin danda'amu.`,
+          `${selectedStaff.fullName} has already clocked in for today. Duplicate entry punches are not permitted. Please select 'Clock Out' when leaving.`
+        ),
+        details: selectedStaff.todayStatus.punchInTime
+          ? l(
+              `የመግቢያ ሰዓት፡ ${new Date(selectedStaff.todayStatus.punchInTime).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`,
+              `Yeroo seensaa: ${new Date(selectedStaff.todayStatus.punchInTime).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`,
+              `Clocked in at: ${new Date(selectedStaff.todayStatus.punchInTime).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`
+            )
+          : undefined,
+      });
+      if (!selectedStaff.todayStatus.hasPunchedOut) {
+        setPunchType("PUNCH_OUT");
+      }
+      setTimeout(() => setStatusMessage(null), 5000);
+      return;
+    }
+
+    // Client-side validation: PUNCH_OUT requires PUNCH_IN first, and cannot be repeated
+    if (punchType === "PUNCH_OUT") {
+      if (!selectedStaff.todayStatus?.hasPunchedIn) {
+        setStatusMessage({
+          type: "warning",
+          title: l("መጀመሪያ መግቢያ ይመዝግቡ", "Dura Seensa Galmeessaa", "Clock-In Required First"),
+          description: l(
+            "የመውጫ ሰዓት ከመመዝገብዎ በፊት መጀመሪያ 'ስራ መግቢያ' መመዝገብ አለብዎት።",
+            "Ba'iinsa galmeessuun dura 'Seensa Hojii' galmeessuu qabdu.",
+            "You cannot clock out because no entry punch (Clock In) was recorded today. Please clock in first."
+          ),
+        });
+        setPunchType("PUNCH_IN");
+        setTimeout(() => setStatusMessage(null), 5000);
+        return;
+      }
+
+      if (selectedStaff.todayStatus?.hasPunchedOut) {
+        setStatusMessage({
+          type: "warning",
+          title: l("የዛሬ ፈረቃ ተጠናቋል", "Hojiin Har'aa Xumurameera", "Shift Already Completed"),
+          description: l(
+            `${selectedStaff.fullName} ዛሬ መግቢያም መውጫም አስመዝግበው ጨርሰዋል።`,
+            `${selectedStaff.fullName} har'aaf seensaa fi ba'iinsi galmaa'ee xumurameera.`,
+            `${selectedStaff.fullName} has already completed both Clock-In and Clock-Out for today.`
+          ),
+          details: selectedStaff.todayStatus.punchOutTime
+            ? l(
+                `የመውጫ ሰዓት፡ ${new Date(selectedStaff.todayStatus.punchOutTime).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`,
+                `Yeroo ba'iinsaa: ${new Date(selectedStaff.todayStatus.punchOutTime).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`,
+                `Clocked out at: ${new Date(selectedStaff.todayStatus.punchOutTime).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`
+              )
+            : undefined,
+        });
+        setTimeout(() => setStatusMessage(null), 5000);
+        return;
+      }
+    }
+
     // Capture picture from camera
     const snapshot = captureSnapshot();
     setCapturedSnapshot(snapshot);
@@ -357,16 +429,23 @@ export default function AttendanceKioskPage() {
     setCapturedSnapshot(null);
 
     if (res.error) {
+      if (selectedBranchId) {
+        fetchStaffList(selectedBranchId);
+      }
       setStatusMessage({
         type: "error",
         title: l("የማረጋገጫ ስህተት", "Dogoggora Mirkaneessaa", "Verification Failed"),
         description: res.error,
       });
-      setTimeout(() => setStatusMessage(null), 4000);
+      setTimeout(() => setStatusMessage(null), 5000);
       return;
     }
 
     if (res.data?.success) {
+      // Refresh staff roster state so status indicators update immediately
+      if (selectedBranchId) {
+        fetchStaffList(selectedBranchId);
+      }
       const tardiness = res.data.tardiness;
       const isLate = tardiness?.isLate;
       const userName = res.data.record?.user?.fullName || selectedStaff?.fullName || "Staff Member";
@@ -593,11 +672,19 @@ export default function AttendanceKioskPage() {
               ) : (
                 staffList.map((staff) => {
                   const isSelected = selectedStaff?.id === staff.id;
+                  const hasIn = staff.todayStatus?.hasPunchedIn;
+                  const hasOut = staff.todayStatus?.hasPunchedOut;
+
                   return (
                     <button
                       key={staff.id}
                       onClick={() => {
                         setSelectedStaff(staff);
+                        if (hasIn && !hasOut) {
+                          setPunchType("PUNCH_OUT");
+                        } else if (!hasIn) {
+                          setPunchType("PUNCH_IN");
+                        }
                       }}
                       className={`w-full text-left px-3 py-2 rounded-xl text-xs font-bold flex items-center justify-between transition-all ${
                         isSelected
@@ -614,16 +701,32 @@ export default function AttendanceKioskPage() {
                           <div className="text-[10px] opacity-80 uppercase tracking-wider">{staff.role}</div>
                         </div>
                       </div>
-                      <div className="text-[10px] font-bold px-2 py-0.5 rounded-md bg-black/20 shrink-0">
-                        {staff.shift === "NIGHT" ? (
-                          <span className="flex items-center gap-1 text-indigo-300">
-                            <Moon className="w-3 h-3" /> Night
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        {hasOut ? (
+                          <span className="text-[10px] font-black px-2 py-0.5 rounded-full bg-slate-900/80 text-stone-300 border border-stone-500/30">
+                            ✓ {l("ተጠናቋል", "Xumurame", "Done")}
+                          </span>
+                        ) : hasIn ? (
+                          <span className="text-[10px] font-black px-2 py-0.5 rounded-full bg-emerald-950/80 text-emerald-300 border border-emerald-500/50 flex items-center gap-1">
+                            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                            {l("ስራ ላይ", "Hojii irra", "In")}
                           </span>
                         ) : (
-                          <span className="flex items-center gap-1 text-amber-300">
-                            <Sun className="w-3 h-3" /> Day
+                          <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-black/30 text-amber-200/70 border border-white/10">
+                            ○ {l("አልገባም", "Hin Seenne", "Not In")}
                           </span>
                         )}
+                        <div className="text-[10px] font-bold px-1.5 py-0.5 rounded-md bg-black/20">
+                          {staff.shift === "NIGHT" ? (
+                            <span className="flex items-center gap-0.5 text-indigo-300">
+                              <Moon className="w-3 h-3" /> Night
+                            </span>
+                          ) : (
+                            <span className="flex items-center gap-0.5 text-amber-300">
+                              <Sun className="w-3 h-3" /> Day
+                            </span>
+                          )}
+                        </div>
                       </div>
                     </button>
                   );
@@ -682,17 +785,49 @@ export default function AttendanceKioskPage() {
                     <p className="text-xs text-[#E2C7B4] font-bold mt-0.5">
                       {selectedStaff.role} • {selectedBranch?.name || "Assigned Branch"}
                     </p>
-                    <div className="inline-flex items-center gap-1.5 mt-2 px-3 py-1 rounded-full text-[11px] font-black bg-[#3C2213] border border-[#5A3A23] text-amber-300">
-                      {selectedStaff.shift === "NIGHT" ? (
-                        <>
-                          <Moon className="w-3.5 h-3.5 text-indigo-300" />
-                          <span>Night Shift (21:00 - 06:00)</span>
-                        </>
+
+                    <div className="flex flex-wrap items-center justify-center gap-2 mt-2">
+                      <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[11px] font-black bg-[#3C2213] border border-[#5A3A23] text-amber-300">
+                        {selectedStaff.shift === "NIGHT" ? (
+                          <>
+                            <Moon className="w-3.5 h-3.5 text-indigo-300" />
+                            <span>Night Shift (21:00 - 06:00)</span>
+                          </>
+                        ) : (
+                          <>
+                            <Sun className="w-3.5 h-3.5 text-amber-400" />
+                            <span>Day Shift (06:00 - 18:00)</span>
+                          </>
+                        )}
+                      </div>
+
+                      {/* Today's Punch State Indicator */}
+                      {selectedStaff.todayStatus?.hasPunchedOut ? (
+                        <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[11px] font-black bg-slate-900 border border-slate-600 text-stone-300">
+                          <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+                          <span>
+                            {l("የዛሬ ፈረቃ ተጠናቋል", "Hojiin xumurameera", "Shift Completed Today")} (
+                            {selectedStaff.todayStatus.punchOutTime
+                              ? new Date(selectedStaff.todayStatus.punchOutTime).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+                              : ""}
+                            )
+                          </span>
+                        </div>
+                      ) : selectedStaff.todayStatus?.hasPunchedIn ? (
+                        <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[11px] font-black bg-emerald-950/80 border border-emerald-500/60 text-emerald-300">
+                          <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+                          <span>
+                            {l("ስራ ላይ ገብተዋል", "Hojii seentaniittu", "Clocked In")} (
+                            {selectedStaff.todayStatus.punchInTime
+                              ? new Date(selectedStaff.todayStatus.punchInTime).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+                              : ""}
+                            )
+                          </span>
+                        </div>
                       ) : (
-                        <>
-                          <Sun className="w-3.5 h-3.5 text-amber-400" />
-                          <span>Day Shift (06:00 - 18:00)</span>
-                        </>
+                        <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[11px] font-black bg-black/30 border border-white/10 text-amber-200/80">
+                          <span>○ {l("ገና አልገቡም", "Hin seenne", "Not Clocked In Yet")}</span>
+                        </div>
                       )}
                     </div>
                   </div>
@@ -717,33 +852,48 @@ export default function AttendanceKioskPage() {
 
                   {/* 1-Tap Punch Button */}
                   <div className="pt-2">
-                    <button
-                      type="button"
-                      disabled={loading}
-                      onClick={handleInitiatePunch}
-                      className={`w-full py-4 px-6 rounded-2xl font-black text-base shadow-2xl flex items-center justify-center gap-3 transition-all active:scale-[0.98] border border-white/20 cursor-pointer ${
-                        punchType === "PUNCH_IN"
-                          ? "bg-gradient-to-r from-emerald-600 via-[#E87A18] to-emerald-600 hover:from-emerald-500 hover:to-[#E87A18] text-white shadow-emerald-900/40"
-                          : "bg-gradient-to-r from-amber-600 via-[#E87A18] to-amber-600 hover:from-amber-500 hover:to-[#E87A18] text-white shadow-amber-900/40"
-                      } ${loading ? "opacity-60 cursor-not-allowed" : ""}`}
-                    >
-                      <Camera className="w-6 h-6 text-white animate-pulse" />
-                      <span>
-                        {loading
-                          ? l("በመመዝገብ ላይ...", "Galmaa'aa jira...", "Confirming Attendance...")
-                          : punchType === "PUNCH_IN"
-                          ? l(
-                              `ፎቶ አንሳና መግቢያ መዝግብ (${selectedStaff.fullName.split(" ")[0]})`,
-                              `Suuraa Kaasi Seensa Galmeessi (${selectedStaff.fullName.split(" ")[0]})`,
-                              `Take Photo & Clock In (${selectedStaff.fullName.split(" ")[0]})`
-                            )
-                          : l(
-                              `ፎቶ አንሳና መውጫ መዝግብ (${selectedStaff.fullName.split(" ")[0]})`,
-                              `Suuraa Kaasi Ba'iinsa Galmeessi (${selectedStaff.fullName.split(" ")[0]})`,
-                              `Take Photo & Clock Out (${selectedStaff.fullName.split(" ")[0]})`
-                            )}
-                      </span>
-                    </button>
+                    {selectedStaff.todayStatus?.hasPunchedIn && selectedStaff.todayStatus?.hasPunchedOut ? (
+                      <button
+                        type="button"
+                        disabled
+                        className="w-full py-4 px-6 rounded-2xl font-black text-base shadow-lg flex items-center justify-center gap-3 bg-stone-900/80 border border-stone-600/50 text-stone-400 cursor-not-allowed"
+                      >
+                        <CheckCircle2 className="w-6 h-6 text-emerald-500" />
+                        <span>{l("የዛሬ ፈረቃ ተጠናቋል", "Hojiin har'aa xumurameera", "Today's Shift Completed")}</span>
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        disabled={loading}
+                        onClick={handleInitiatePunch}
+                        className={`w-full py-4 px-6 rounded-2xl font-black text-base shadow-2xl flex items-center justify-center gap-3 transition-all active:scale-[0.98] border border-white/20 cursor-pointer ${
+                          punchType === "PUNCH_IN"
+                            ? "bg-gradient-to-r from-emerald-600 via-[#E87A18] to-emerald-600 hover:from-emerald-500 hover:to-[#E87A18] text-white shadow-emerald-900/40"
+                            : "bg-gradient-to-r from-amber-600 via-[#E87A18] to-amber-600 hover:from-amber-500 hover:to-[#E87A18] text-white shadow-amber-900/40"
+                        } ${loading ? "opacity-60 cursor-not-allowed" : ""}`}
+                      >
+                        <Camera className="w-6 h-6 text-white animate-pulse" />
+                        <span>
+                          {loading
+                            ? l("በመመዝገብ ላይ...", "Galmaa'aa jira...", "Confirming Attendance...")
+                            : punchType === "PUNCH_IN"
+                            ? selectedStaff.todayStatus?.hasPunchedIn
+                              ? l("ቀደም ብለው ገብተዋል (ስራ መውጫ ይጫኑ)", "Duraanuu seentaniittu", "Already In (Tap Clock Out)")
+                              : l(
+                                  `ፎቶ አንሳና መግቢያ መዝግብ (${selectedStaff.fullName.split(" ")[0]})`,
+                                  `Suuraa Kaasi Seensa Galmeessi (${selectedStaff.fullName.split(" ")[0]})`,
+                                  `Take Photo & Clock In (${selectedStaff.fullName.split(" ")[0]})`
+                                )
+                            : !selectedStaff.todayStatus?.hasPunchedIn
+                            ? l("መጀመሪያ መግቢያ ይመዝግቡ", "Dura seensa galmeessaa", "Clock In First")
+                            : l(
+                                `ፎቶ አንሳና መውጫ መዝግብ (${selectedStaff.fullName.split(" ")[0]})`,
+                                `Suuraa Kaasi Ba'iinsa Galmeessi (${selectedStaff.fullName.split(" ")[0]})`,
+                                `Take Photo & Clock Out (${selectedStaff.fullName.split(" ")[0]})`
+                              )}
+                        </span>
+                      </button>
+                    )}
                   </div>
 
                   <button

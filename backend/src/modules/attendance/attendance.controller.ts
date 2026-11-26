@@ -156,6 +156,69 @@ attendanceRouter.post('/punch', async (req: Request, res: Response) => {
       businessDate = getPreviousDateStr(dateStr);
     }
 
+    // Strict duplicate punch validation & shift workflow integrity
+    if (type === 'PUNCH_IN') {
+      const existingIn = await prisma.attendanceRecord.findFirst({
+        where: {
+          userId: user.id,
+          businessDate,
+          type: 'PUNCH_IN',
+        },
+        orderBy: { punchTime: 'desc' },
+      });
+
+      if (existingIn) {
+        const timeStr = new Date(existingIn.punchTime).toLocaleTimeString('en-US', {
+          hour: '2-digit',
+          minute: '2-digit',
+          timeZone: 'Africa/Addis_Ababa',
+        });
+        return res.status(409).json({
+          error: `${user.fullName} has already clocked in for today (${businessDate}) at ${timeStr}. Duplicate entry punches are not permitted.`,
+          alreadyPunched: true,
+          existingRecord: existingIn,
+        });
+      }
+    } else if (type === 'PUNCH_OUT') {
+      // Must clock in before clocking out
+      const existingIn = await prisma.attendanceRecord.findFirst({
+        where: {
+          userId: user.id,
+          businessDate,
+          type: 'PUNCH_IN',
+        },
+      });
+
+      if (!existingIn) {
+        return res.status(400).json({
+          error: `${user.fullName} cannot clock out because no entry punch (PUNCH_IN) was recorded for today (${businessDate}). Please clock in first.`,
+        });
+      }
+
+      // Cannot clock out twice for the same shift/day
+      const existingOut = await prisma.attendanceRecord.findFirst({
+        where: {
+          userId: user.id,
+          businessDate,
+          type: 'PUNCH_OUT',
+        },
+        orderBy: { punchTime: 'desc' },
+      });
+
+      if (existingOut) {
+        const timeStr = new Date(existingOut.punchTime).toLocaleTimeString('en-US', {
+          hour: '2-digit',
+          minute: '2-digit',
+          timeZone: 'Africa/Addis_Ababa',
+        });
+        return res.status(409).json({
+          error: `${user.fullName} has already clocked out for today (${businessDate}) at ${timeStr}. Duplicate exit punches are not permitted.`,
+          alreadyPunched: true,
+          existingRecord: existingOut,
+        });
+      }
+    }
+
     // Tardiness calculation (for PUNCH_IN only)
     let isLate = false;
     let lateMinutes = 0;
@@ -317,7 +380,37 @@ attendanceRouter.get('/staff-list', async (req: Request, res: Response) => {
       orderBy: { fullName: 'asc' },
     });
 
-    return res.json(staff);
+    // Attach today's live punch status for each staff member
+    const now = new Date();
+    const { dateStr } = getEatDateTime(now);
+    const todayPunches = await prisma.attendanceRecord.findMany({
+      where: {
+        businessDate: dateStr,
+      },
+      select: {
+        userId: true,
+        type: true,
+        punchTime: true,
+      },
+    });
+
+    const staffWithStatus = staff.map((s) => {
+      const userPunches = todayPunches.filter((p) => p.userId === s.id);
+      const punchInRecord = userPunches.find((p) => p.type === 'PUNCH_IN');
+      const punchOutRecord = userPunches.find((p) => p.type === 'PUNCH_OUT');
+
+      return {
+        ...s,
+        todayStatus: {
+          hasPunchedIn: !!punchInRecord,
+          hasPunchedOut: !!punchOutRecord,
+          punchInTime: punchInRecord?.punchTime || null,
+          punchOutTime: punchOutRecord?.punchTime || null,
+        },
+      };
+    });
+
+    return res.json(staffWithStatus);
   } catch (err: any) {
     return res.status(500).json({ error: err.message || 'Failed to fetch staff list.' });
   }
