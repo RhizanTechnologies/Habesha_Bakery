@@ -99,10 +99,26 @@ export async function uploadToStorage(
   return `/uploads/${filePath}`;
 }
 
+export function getUploadsDir(): string {
+  if (
+    process.env.VERCEL ||
+    process.env.AWS_LAMBDA_FUNCTION_NAME ||
+    process.env.LAMBDA_TASK_ROOT ||
+    (typeof process.cwd === 'function' && process.cwd().startsWith('/var/task'))
+  ) {
+    return path.join('/tmp', 'uploads');
+  }
+  return path.join(process.cwd(), 'uploads');
+}
+
 export function saveBase64Media(
   base64Data: string | null | undefined,
   folder: 'attendance' | 'audio'
-): string | null {
+): Promise<string | null>;
+export async function saveBase64Media(
+  base64Data: string | null | undefined,
+  folder: 'attendance' | 'audio'
+): Promise<string | null> {
   if (!base64Data) return null;
   if (!base64Data.startsWith('data:')) {
     return base64Data; // Already a URL path
@@ -126,25 +142,65 @@ export function saveBase64Media(
   else if (mimeType.includes('wav')) ext = '.wav';
 
   const filename = `${folder}-${Date.now()}-${Math.round(Math.random() * 1e9)}${ext}`;
-  const uploadsDir = path.join(process.cwd(), 'uploads');
-  const targetDir = path.join(uploadsDir, folder);
+  const filePath = `${folder}/${filename}`;
 
-  if (!fs.existsSync(targetDir)) {
-    fs.mkdirSync(targetDir, { recursive: true });
+  // 1. Try Supabase Storage first if configured
+  const supabase = getSupabase();
+  if (supabase) {
+    try {
+      await ensureBucket(supabase);
+      const { error } = await supabase.storage
+        .from(BUCKET_NAME)
+        .upload(filePath, buffer, {
+          contentType: mimeType,
+          upsert: true,
+        });
+
+      if (!error) {
+        const { data: publicUrlData } = supabase.storage
+          .from(BUCKET_NAME)
+          .getPublicUrl(filePath);
+
+        return publicUrlData.publicUrl;
+      }
+      console.error('[Supabase Storage Upload Error]', error);
+    } catch (sbErr) {
+      console.error('[Supabase Storage Exception]', sbErr);
+    }
   }
 
-  const filePath = path.join(targetDir, filename);
-  fs.writeFileSync(filePath, buffer);
+  // 2. Best-effort write to local /tmp or uploads directory (never crash on read-only environments)
+  try {
+    const uploadsDir = getUploadsDir();
+    const targetDir = path.join(uploadsDir, folder);
+    if (!fs.existsSync(targetDir)) {
+      fs.mkdirSync(targetDir, { recursive: true });
+    }
+    const fullPath = path.join(targetDir, filename);
+    fs.writeFileSync(fullPath, buffer);
+  } catch (fsErr: any) {
+    console.warn(`[Local Storage Notice] Disk write skipped (${fsErr?.message || fsErr}). Relying on DB persistence.`);
+  }
 
-  // If DB persistence fallback table exists, record it
-  prisma.uploadedFile.create({
-    data: {
-      filename: `${folder}/${filename}`,
-      mimeType,
-      size: buffer.length,
-      data: buffer,
-    },
-  }).catch(() => {});
+  // 3. Persist to Postgres database fallback table for serverless portability
+  try {
+    await prisma.uploadedFile.upsert({
+      where: { filename: filePath },
+      create: {
+        filename: filePath,
+        mimeType,
+        size: buffer.length,
+        data: buffer,
+      },
+      update: {
+        mimeType,
+        size: buffer.length,
+        data: buffer,
+      },
+    });
+  } catch (dbErr: any) {
+    console.warn(`[DB Storage Warning] Could not store ${filePath} in database:`, dbErr?.message || dbErr);
+  }
 
-  return `/uploads/${folder}/${filename}`;
+  return `/uploads/${filePath}`;
 }

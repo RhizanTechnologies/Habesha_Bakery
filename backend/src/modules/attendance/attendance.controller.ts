@@ -267,9 +267,19 @@ attendanceRouter.post('/punch', async (req: Request, res: Response) => {
       }
     }
 
-    // Persist media blobs to filesystem and store clean static URLs to protect Postgres storage
-    const savedSnapshotUrl = saveBase64Media(snapshot, 'attendance');
-    const savedVoiceNoteUrl = saveBase64Media(voiceNote, 'audio');
+    // Persist media blobs to filesystem/cloud/database and store clean static URLs to protect Postgres storage
+    let savedSnapshotUrl: string | null = null;
+    let savedVoiceNoteUrl: string | null = null;
+    try {
+      savedSnapshotUrl = await saveBase64Media(snapshot, 'attendance');
+    } catch (err) {
+      console.error('[Attendance Snapshot Save Error]', err);
+    }
+    try {
+      savedVoiceNoteUrl = await saveBase64Media(voiceNote, 'audio');
+    } catch (err) {
+      console.error('[Attendance VoiceNote Save Error]', err);
+    }
 
     // Create Attendance Record
     const record = await prisma.attendanceRecord.create({

@@ -3,6 +3,7 @@ import bcrypt from 'bcryptjs';
 import multer from 'multer';
 import path from 'path';
 import { prisma } from '../lib/prisma.js';
+import { getUploadsDir } from '../lib/storage.js';
 import { authMiddleware, requireRole, type AuthRequest } from '../middleware/auth.js';
 
 import fs from 'fs';
@@ -10,7 +11,7 @@ import fs from 'fs';
 export const usersRouter = Router();
 usersRouter.use(authMiddleware);
 
-const uploadsDir = process.env.VERCEL ? path.join('/tmp', 'uploads') : path.join(process.cwd(), 'uploads');
+const uploadsDir = getUploadsDir();
 try {
   if (!fs.existsSync(uploadsDir)) {
     fs.mkdirSync(uploadsDir, { recursive: true });

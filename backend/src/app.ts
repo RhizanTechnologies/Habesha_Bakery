@@ -21,16 +21,19 @@ import { attendanceRouter } from './modules/attendance/attendance.controller.js'
 import { transfersRouter } from './modules/transfers/transfers.controller.js';
 import { settingsRouter } from './routes/settings.js';
 import { prisma } from './lib/prisma.js';
+import { getUploadsDir } from './lib/storage.js';
 import path from 'path';
 import fs from 'fs';
 
 export const app = express();
 
-const uploadsDir = process.env.VERCEL ? path.join('/tmp', 'uploads') : path.join(process.cwd(), 'uploads');
+const uploadsDir = getUploadsDir();
 const avatarsDir = path.join(uploadsDir, 'avatars');
 const documentsDir = path.join(uploadsDir, 'documents');
+const attendanceDir = path.join(uploadsDir, 'attendance');
+const audioDir = path.join(uploadsDir, 'audio');
 
-for (const dir of [uploadsDir, avatarsDir, documentsDir]) {
+for (const dir of [uploadsDir, avatarsDir, documentsDir, attendanceDir, audioDir]) {
   try {
     if (!fs.existsSync(dir)) {
       fs.mkdirSync(dir, { recursive: true });
@@ -69,13 +72,15 @@ app.get(['/uploads/*', '/api/uploads/*'], async (req, res) => {
       });
     }
 
-    // 3. Fallback to subfolders if requested bare but stored under documents/ or avatars/
+    // 3. Fallback to subfolders if requested bare but stored under subfolders
     if (!fileRecord && !relativePath.includes('/')) {
       fileRecord = await prisma.uploadedFile.findFirst({
         where: {
           OR: [
             { filename: `documents/${relativePath}` },
             { filename: `avatars/${relativePath}` },
+            { filename: `attendance/${relativePath}` },
+            { filename: `audio/${relativePath}` },
           ],
         },
       });
