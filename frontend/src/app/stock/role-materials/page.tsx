@@ -96,6 +96,12 @@ export default function RoleMaterialsPage() {
   const [activeRole, setActiveRole] = useState<string>("ADMIN");
   const [searchQuery, setSearchQuery] = useState<string>("");
   const [selectedCategory, setSelectedCategory] = useState<string>("ALL");
+  const [selectedBranchOverride, setSelectedBranchOverride] = useState<string>("");
+
+  const targetBranchId =
+    selectedBranchOverride ||
+    selectedBranchId ||
+    (branches.length > 0 ? (branches.find((b) => b.isHub)?.id || branches[0].id) : "");
 
   // Selected Stock Item IDs for the currently active role
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
@@ -103,32 +109,31 @@ export default function RoleMaterialsPage() {
   const [pendingRoleSwitch, setPendingRoleSwitch] = useState<string | null>(null);
 
   // Fetch all stock items for current branch
-  const { data: stockItems = [], isLoading, isRefetching } = useQuery<StockItemRoleData[]>({
-    queryKey: ["role-materials", selectedBranchId],
+  const { data: stockItemsData, isLoading, isRefetching } = useQuery<StockItemRoleData[]>({
+    queryKey: ["role-materials", targetBranchId],
     queryFn: async () => {
-      const res = await api.get(`/stock-items/role-materials?branchId=${selectedBranchId}`);
+      if (!targetBranchId) return [];
+      const res = await api.get(`/stock-items/role-materials?branchId=${targetBranchId}`);
       return res.data || [];
     },
-    enabled: isOwner && !!selectedBranchId,
+    enabled: isOwner && !!targetBranchId,
   });
+
+  const stockItems = useMemo(() => stockItemsData || [], [stockItemsData]);
 
   // When active role changes or stock items load, initialize selectedIds from backend state
   useEffect(() => {
-    if (!stockItems || stockItems.length === 0) {
-      setSelectedIds(new Set());
-      setHasChanges(false);
-      return;
-    }
-
     const assigned = new Set<string>();
-    for (const item of stockItems) {
-      if (item.allowedRoles && item.allowedRoles.includes(activeRole)) {
-        assigned.add(item.id);
+    if (stockItemsData && stockItemsData.length > 0) {
+      for (const item of stockItemsData) {
+        if (item.allowedRoles && item.allowedRoles.includes(activeRole)) {
+          assigned.add(item.id);
+        }
       }
     }
     setSelectedIds(assigned);
     setHasChanges(false);
-  }, [activeRole, stockItems]);
+  }, [activeRole, stockItemsData]);
 
   // Extract distinct categories from stock items
   const categories = useMemo(() => {
@@ -207,8 +212,11 @@ export default function RoleMaterialsPage() {
   // Mutation to save changes to backend
   const saveMutation = useMutation({
     mutationFn: async () => {
+      if (!targetBranchId) {
+        throw new Error("No branch selected");
+      }
       return await api.put("/stock-items/role-materials", {
-        branchId: selectedBranchId,
+        branchId: targetBranchId,
         role: activeRole,
         stockItemIds: Array.from(selectedIds),
       });
@@ -217,7 +225,7 @@ export default function RoleMaterialsPage() {
       const roleObj = PRODUCTION_ROLES.find((r) => r.role === activeRole);
       toast.success(`Successfully saved stock material access for ${roleObj?.label || activeRole}`);
       setHasChanges(false);
-      queryClient.invalidateQueries({ queryKey: ["role-materials", selectedBranchId] });
+      queryClient.invalidateQueries({ queryKey: ["role-materials", targetBranchId] });
       queryClient.invalidateQueries({ queryKey: ["stock-items"] });
     },
     onError: (err: any) => {
@@ -249,7 +257,8 @@ export default function RoleMaterialsPage() {
   }
 
   const currentRoleMeta = PRODUCTION_ROLES.find((r) => r.role === activeRole) || PRODUCTION_ROLES[0];
-  const activeBranchName = branches.find((b) => b.id === selectedBranchId)?.name || "Current Branch";
+  const activeBranch = branches.find((b) => b.id === targetBranchId) || branches[0] || null;
+  const activeBranchName = activeBranch?.name || "Current Branch";
 
   return (
     <DashboardLayout>
@@ -265,13 +274,32 @@ export default function RoleMaterialsPage() {
               >
                 <ArrowLeft className="w-4 h-4" />
               </Link>
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 flex-wrap">
                 <span className="text-xs font-black uppercase tracking-wider px-2 py-0.5 rounded-md bg-amber-100 text-amber-900 border border-amber-200">
                   {t('stock.ownerManagement') || 'Owner Management'}
                 </span>
-                <span className="text-xs font-bold text-[#8C7361]">
-                  • {activeBranchName}
-                </span>
+                {branches.length > 1 ? (
+                  <div className="flex items-center gap-1.5 bg-white border border-[#EDE4D5] rounded-xl px-2.5 py-1 text-xs">
+                    <span className="text-[#8C7361] font-semibold">{t('common.branch') || 'Branch'}:</span>
+                    <select
+                      value={targetBranchId}
+                      onChange={(e) => {
+                        setSelectedBranchOverride(e.target.value);
+                      }}
+                      className="font-bold text-[#2C1B10] bg-transparent focus:outline-none cursor-pointer"
+                    >
+                      {branches.map((b) => (
+                        <option key={b.id} value={b.id}>
+                          {b.name} {b.isHub ? '(Hub)' : ''}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                ) : (
+                  <span className="text-xs font-bold text-[#8C7361]">
+                    • {activeBranchName}
+                  </span>
+                )}
               </div>
             </div>
             <h1 className="text-2xl sm:text-3xl font-black text-[#2C1B10] tracking-tight">

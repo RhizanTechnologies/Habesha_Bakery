@@ -330,7 +330,7 @@ export default function StockPage() {
 
   const handleAddStock = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!isStockStaff) {
+    if (!isGlobalAdmin) {
       toast.error(t("stock.toastOnlyAdminOwnerAddStock"));
       return;
     }
@@ -819,7 +819,7 @@ export default function StockPage() {
                         </Button>
                       </Link>
 
-                      {isStockStaff && (
+                      {isGlobalAdmin && (
                         <Button 
                           variant="outline" 
                           size="sm" 
@@ -954,7 +954,7 @@ export default function StockPage() {
               )}
 
               {/* Primary Actions Row */}
-              <div className={`grid ${isStockStaff ? 'grid-cols-4' : 'grid-cols-2'} gap-1.5 pt-2 border-t border-zinc-100`}>
+              <div className={`grid ${isGlobalAdmin ? 'grid-cols-4' : isStockStaff ? 'grid-cols-3' : 'grid-cols-2'} gap-1.5 pt-2 border-t border-zinc-100`}>
                 <Link href={`/stock/${item.id}`} className="w-full">
                   <Button variant="outline" size="sm" className="w-full h-9 text-xs text-[#4A2E1B] border-[#EDE4D5] hover:bg-[#FAF6F0] font-bold flex items-center justify-center gap-1 px-1">
                     <History className="w-3.5 h-3.5 shrink-0" />
@@ -962,7 +962,7 @@ export default function StockPage() {
                   </Button>
                 </Link>
 
-                {isStockStaff && (
+                {isGlobalAdmin && (
                   <Button 
                     variant="outline" 
                     size="sm" 
