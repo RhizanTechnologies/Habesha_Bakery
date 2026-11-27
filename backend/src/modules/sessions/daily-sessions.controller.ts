@@ -1,5 +1,5 @@
 import { Router, Response } from 'express';
-import { authMiddleware, requireRole, type AuthRequest } from '../../middleware/auth.js';
+import { authMiddleware, requireRole, requirePrivilege, type AuthRequest } from '../../middleware/auth.js';
 import { DailySessionsService } from './daily-sessions.service.js';
 import { parsePagination } from '../../lib/pagination.js';
 
@@ -8,7 +8,7 @@ const dailySessionsService = new DailySessionsService();
 
 dailySessionsRouter.use(authMiddleware);
 
-dailySessionsRouter.get('/', requireRole('OWNER', 'ADMIN'), async (req: AuthRequest, res: Response) => {
+dailySessionsRouter.get('/', requirePrivilege('access_daily_sessions', 'OWNER', 'ADMIN'), async (req: AuthRequest, res: Response) => {
   const branchId = (req.query.branchId as string) || (req.user?.role === 'OWNER' ? undefined : req.user?.branchId);
   const from = req.query.from as string;
   const to = req.query.to as string;
@@ -29,7 +29,7 @@ dailySessionsRouter.get('/', requireRole('OWNER', 'ADMIN'), async (req: AuthRequ
   res.json(result.data);
 });
 
-dailySessionsRouter.get('/by-date', requireRole('OWNER', 'ADMIN'), async (req: AuthRequest, res: Response) => {
+dailySessionsRouter.get('/by-date', requirePrivilege('access_daily_sessions', 'OWNER', 'ADMIN'), async (req: AuthRequest, res: Response) => {
   const branchId = (req.query.branchId as string) || req.user?.branchId;
   const date = req.query.date as string;
   if (!branchId || !date) {
@@ -60,7 +60,7 @@ dailySessionsRouter.get('/active/available-products', requireRole('OWNER', 'ADMI
   res.json(result.data);
 });
 
-dailySessionsRouter.get('/:id', requireRole('OWNER', 'ADMIN'), async (req, res: Response) => {
+dailySessionsRouter.get('/:id', requirePrivilege('access_daily_sessions', 'OWNER', 'ADMIN'), async (req, res: Response) => {
   const result = await dailySessionsService.getDailySessionById(req.params.id);
   if (result.error) {
     return res.status(result.status || 500).json({ error: result.error });
@@ -68,7 +68,7 @@ dailySessionsRouter.get('/:id', requireRole('OWNER', 'ADMIN'), async (req, res: 
   res.json(result.data);
 });
 
-dailySessionsRouter.post('/', requireRole('OWNER', 'ADMIN'), async (req: AuthRequest, res: Response) => {
+dailySessionsRouter.post('/', requirePrivilege('access_daily_sessions', 'OWNER', 'ADMIN'), async (req: AuthRequest, res: Response) => {
   const result = await dailySessionsService.createDailySession(req.body, req.user?.branchId);
   if (result.error) {
     return res.status(result.status || 500).json({ error: result.error });
@@ -76,7 +76,7 @@ dailySessionsRouter.post('/', requireRole('OWNER', 'ADMIN'), async (req: AuthReq
   res.status(201).json(result.data);
 });
 
-dailySessionsRouter.patch('/:id', requireRole('OWNER', 'ADMIN'), async (req: AuthRequest, res: Response) => {
+dailySessionsRouter.patch('/:id', requirePrivilege('access_daily_sessions', 'OWNER', 'ADMIN'), async (req: AuthRequest, res: Response) => {
   const result = await dailySessionsService.updateDailySession(req.params.id, req.body, req.user?.id, req.user?.role);
   if (result.error) {
     return res.status(result.status || 500).json({ error: result.error });
@@ -84,7 +84,7 @@ dailySessionsRouter.patch('/:id', requireRole('OWNER', 'ADMIN'), async (req: Aut
   res.json(result.data);
 });
 
-dailySessionsRouter.post('/:id/save-draft', requireRole('OWNER', 'ADMIN'), async (req: AuthRequest, res: Response) => {
+dailySessionsRouter.post('/:id/save-draft', requirePrivilege('access_daily_sessions', 'OWNER', 'ADMIN'), async (req: AuthRequest, res: Response) => {
   const result = await dailySessionsService.saveSessionDraft(req.params.id, req.body, req.user?.id, req.user?.role);
   if (result.error) {
     return res.status(result.status || 500).json({ error: result.error });
@@ -92,7 +92,7 @@ dailySessionsRouter.post('/:id/save-draft', requireRole('OWNER', 'ADMIN'), async
   res.json(result.data);
 });
 
-dailySessionsRouter.post('/:id/submit-close', requireRole('OWNER', 'ADMIN'), async (req: AuthRequest, res: Response) => {
+dailySessionsRouter.post('/:id/submit-close', requirePrivilege('access_daily_sessions', 'OWNER', 'ADMIN'), async (req: AuthRequest, res: Response) => {
   const result = await dailySessionsService.submitCloseRequest(req.params.id, req.body, req.user!.id);
   if (result.error) {
     return res.status(result.status || 500).json({ error: result.error });

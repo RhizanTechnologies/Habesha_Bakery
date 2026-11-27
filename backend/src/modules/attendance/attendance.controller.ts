@@ -1,6 +1,6 @@
 import { Router, Request, Response } from 'express';
 import { prisma } from '../../lib/prisma.js';
-import { authMiddleware, requireRole, type AuthRequest } from '../../middleware/auth.js';
+import { authMiddleware, requireRole, requirePrivilege, type AuthRequest } from '../../middleware/auth.js';
 import { Role } from '@prisma/client';
 import { saveBase64Media } from '../../lib/storage.js';
 import { notificationsService } from '../notifications/notifications.service.js';
@@ -440,7 +440,7 @@ attendanceRouter.use(authMiddleware);
  * GET /api/attendance
  * Management audit view of check-in records with snapshots and tardiness
  */
-attendanceRouter.get('/', requireRole('OWNER', 'ADMIN', 'BRANCH_MANAGER'), async (req: AuthRequest, res: Response) => {
+attendanceRouter.get('/', requirePrivilege('access_attendance', 'OWNER', 'ADMIN', 'BRANCH_MANAGER'), async (req: AuthRequest, res: Response) => {
   try {
     const user = req.user!;
     const isGlobal = user.role === Role.OWNER;
@@ -515,7 +515,7 @@ attendanceRouter.get('/', requireRole('OWNER', 'ADMIN', 'BRANCH_MANAGER'), async
  * GET /api/attendance/penalty-config
  * Returns the Owner-configured check-in time range & penalty range
  */
-attendanceRouter.get('/penalty-config', requireRole('OWNER', 'ADMIN', 'BRANCH_MANAGER'), async (req: AuthRequest, res: Response) => {
+attendanceRouter.get('/penalty-config', requirePrivilege('access_attendance', 'OWNER', 'ADMIN', 'BRANCH_MANAGER'), async (req: AuthRequest, res: Response) => {
   try {
     const rules = await getCompanyAttendanceRules();
     return res.json({
@@ -591,7 +591,7 @@ attendanceRouter.post('/penalty-config', requireRole('OWNER'), async (req: AuthR
  * POST /api/attendance/penalties/:id/approve
  * OWNER or ADMIN: Approves an attendance penalty so it is registered for payroll deduction
  */
-attendanceRouter.post('/penalties/:id/approve', requireRole('OWNER', 'ADMIN'), async (req: AuthRequest, res: Response) => {
+attendanceRouter.post('/penalties/:id/approve', requirePrivilege('access_attendance', 'OWNER', 'ADMIN'), async (req: AuthRequest, res: Response) => {
   try {
     const penalty = await prisma.penalty.findUnique({ where: { id: req.params.id } });
     if (!penalty) {
@@ -618,7 +618,7 @@ attendanceRouter.post('/penalties/:id/approve', requireRole('OWNER', 'ADMIN'), a
  * POST /api/attendance/penalties/:id/waive
  * OWNER or ADMIN: Waives / forgives an attendance penalty (e.g. after hearing voice explanation)
  */
-attendanceRouter.post('/penalties/:id/waive', requireRole('OWNER', 'ADMIN'), async (req: AuthRequest, res: Response) => {
+attendanceRouter.post('/penalties/:id/waive', requirePrivilege('access_attendance', 'OWNER', 'ADMIN'), async (req: AuthRequest, res: Response) => {
   try {
     const { reason } = req.body;
     const penalty = await prisma.penalty.findUnique({ where: { id: req.params.id } });
@@ -650,7 +650,7 @@ attendanceRouter.post('/penalties/:id/waive', requireRole('OWNER', 'ADMIN'), asy
  * OWNER or ADMIN: Batch approves all pending attendance penalties
  * Accepts optional { ids, branchId, businessDate }
  */
-attendanceRouter.post('/penalties/batch-approve', requireRole('OWNER', 'ADMIN'), async (req: AuthRequest, res: Response) => {
+attendanceRouter.post('/penalties/batch-approve', requirePrivilege('access_attendance', 'OWNER', 'ADMIN'), async (req: AuthRequest, res: Response) => {
   try {
     const { ids, branchId, businessDate } = req.body;
     const whereClause: any = {

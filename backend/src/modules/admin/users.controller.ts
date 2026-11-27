@@ -1,6 +1,6 @@
 import { Router, Response } from 'express';
 import multer from 'multer';
-import { authMiddleware, requireRole, type AuthRequest } from '../../middleware/auth.js';
+import { authMiddleware, requireRole, requirePrivilege, type AuthRequest } from '../../middleware/auth.js';
 import { UsersService } from './users.service.js';
 import { uploadToStorage } from '../../lib/storage.js';
 
@@ -120,7 +120,7 @@ usersRouter.get('/:id', requireRole('OWNER', 'ADMIN'), async (req, res: Response
   res.json(result.data);
 });
 
-usersRouter.post('/', requireRole('OWNER', 'ADMIN'), handleUserFormUpload, async (req: AuthRequest, res: Response) => {
+usersRouter.post('/', requirePrivilege('access_users', 'OWNER', 'ADMIN'), handleUserFormUpload, async (req: AuthRequest, res: Response) => {
   const files = req.files as { [fieldname: string]: Express.Multer.File[] } | undefined;
   const docFile = files?.file?.[0];
   const avatarFile = files?.avatar?.[0];
@@ -150,7 +150,7 @@ usersRouter.post('/', requireRole('OWNER', 'ADMIN'), handleUserFormUpload, async
   }
 });
 
-usersRouter.patch('/:id', requireRole('OWNER', 'ADMIN'), handleUserFormUpload, async (req: AuthRequest, res: Response) => {
+usersRouter.patch('/:id', requirePrivilege('access_users', 'OWNER', 'ADMIN'), handleUserFormUpload, async (req: AuthRequest, res: Response) => {
   const files = req.files as { [fieldname: string]: Express.Multer.File[] } | undefined;
   const docFile = files?.file?.[0];
   const avatarFile = files?.avatar?.[0];

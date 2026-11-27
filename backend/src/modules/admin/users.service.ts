@@ -138,10 +138,12 @@ export class UsersService {
               SELECT 
                 usr.id, usr."fullName", usr.phone, usr.role, usr."branchId", usr."isActive", 
                 usr."createdAt", usr.salary, usr."startDate", usr."lastPaidDate", usr.shift, 
-                usr."avatarUrl", usr."filesUrl",
-                CASE WHEN b.id IS NOT NULL THEN json_build_object('id', b.id, 'name', b.name) ELSE NULL END AS branch
+                usr."avatarUrl", usr."filesUrl", usr."customRoleId", usr.permissions,
+                CASE WHEN b.id IS NOT NULL THEN json_build_object('id', b.id, 'name', b.name) ELSE NULL END AS branch,
+                CASE WHEN cr.id IS NOT NULL THEN json_build_object('id', cr.id, 'code', cr.code, 'name', cr.name, 'nameAm', cr."nameAm", 'nameOm', cr."nameOm", 'baseRole', cr."baseRole", 'permissions', cr.permissions) ELSE NULL END AS "customRole"
               FROM "User" usr
               LEFT JOIN "Branch" b ON b.id = usr."branchId"
+              LEFT JOIN "CustomRole" cr ON cr.id = usr."customRoleId"
               WHERE usr.id = ${userId}
             ) u
           ) AS user,
@@ -280,14 +282,20 @@ export class UsersService {
       return { error: 'Phone already exists', status: 400 };
     }
 
-    const branchRoleError = await validateBranchRoleCompatibility(branchId || null, role, customRoleId || null);
-    if (branchRoleError) {
-      return { error: branchRoleError, status: 400 };
-    }
+    let effectiveRole = role;
+    let effectiveCustomRoleId = customRoleId || null;
 
-    const passwordHash = await bcrypt.hash(password, 10);
-    const salaryNum = toDecimal(salary);
-    const dailyExpenseNum = toDecimal(dailyExpense);
+    // Detect custom role passed via role (e.g. "CUSTOM_<id>" or role code/id)
+    if (typeof role === 'string' && (role.startsWith('CUSTOM_') || !['OWNER', 'ADMIN', 'BAKER', 'CAKE_WORKER', 'CASHIER', 'SAMBUSA_WORKER', 'STOCK_KEEPER', 'EMPLOYEE'].includes(role))) {
+      const cId = role.startsWith('CUSTOM_') ? role.replace('CUSTOM_', '') : role;
+      const cr = await prisma.customRole.findFirst({
+        where: { OR: [{ id: cId }, { code: cId }] },
+      });
+      if (cr) {
+        effectiveCustomRoleId = cr.id;
+        effectiveRole = cr.baseRole;
+      }
+    }
 
     let parsedPermissions: string[] = [];
     if (Array.isArray(permissions)) {
@@ -300,14 +308,35 @@ export class UsersService {
       }
     }
 
+    if (effectiveCustomRoleId) {
+      const cr = await prisma.customRole.findUnique({
+        where: { id: effectiveCustomRoleId },
+      });
+      if (cr) {
+        effectiveRole = cr.baseRole;
+        if (parsedPermissions.length === 0 && cr.permissions?.length) {
+          parsedPermissions = cr.permissions;
+        }
+      }
+    }
+
+    const branchRoleError = await validateBranchRoleCompatibility(branchId || null, effectiveRole, effectiveCustomRoleId);
+    if (branchRoleError) {
+      return { error: branchRoleError, status: 400 };
+    }
+
+    const passwordHash = await bcrypt.hash(password, 10);
+    const salaryNum = toDecimal(salary);
+    const dailyExpenseNum = toDecimal(dailyExpense);
+
     const user = await prisma.user.create({
       data: {
         fullName: fullName.trim(),
         phone: phoneTrim,
         passwordHash,
-        role: role as any,
+        role: effectiveRole as any,
         branchId: branchId || null,
-        customRoleId: customRoleId || null,
+        customRoleId: effectiveCustomRoleId || null,
         permissions: parsedPermissions,
         salary: salaryNum ?? undefined,
         dailyExpense: dailyExpenseNum ?? undefined,
@@ -385,8 +414,29 @@ export class UsersService {
     }
 
     const effectiveBranchId = branchId !== undefined ? (branchId || null) : targetUser.branchId;
-    const effectiveRole = typeof role === 'string' ? role : targetUser.role;
-    const effectiveCustomRoleId = customRoleId !== undefined ? (customRoleId || null) : targetUser.customRoleId;
+    let effectiveRole = typeof role === 'string' ? role : targetUser.role;
+    let effectiveCustomRoleId = customRoleId !== undefined ? (customRoleId || null) : targetUser.customRoleId;
+
+    if (typeof role === 'string' && (role.startsWith('CUSTOM_') || !['OWNER', 'ADMIN', 'BAKER', 'CAKE_WORKER', 'CASHIER', 'SAMBUSA_WORKER', 'STOCK_KEEPER', 'EMPLOYEE'].includes(role))) {
+      const cId = role.startsWith('CUSTOM_') ? role.replace('CUSTOM_', '') : role;
+      const cr = await prisma.customRole.findFirst({
+        where: { OR: [{ id: cId }, { code: cId }] },
+      });
+      if (cr) {
+        effectiveCustomRoleId = cr.id;
+        effectiveRole = cr.baseRole;
+      }
+    }
+
+    if (effectiveCustomRoleId) {
+      const cr = await prisma.customRole.findUnique({
+        where: { id: effectiveCustomRoleId },
+      });
+      if (cr) {
+        effectiveRole = cr.baseRole;
+      }
+    }
+
     const branchRoleError = await validateBranchRoleCompatibility(effectiveBranchId, effectiveRole, effectiveCustomRoleId);
     if (branchRoleError) {
       return { error: branchRoleError, status: 400 };
@@ -412,9 +462,8 @@ export class UsersService {
       }
       data.phone = phoneTrim;
     }
-    if (typeof role === 'string') data.role = role;
-    if (branchId !== undefined) data.branchId = branchId || null;
-    if (customRoleId !== undefined) data.customRoleId = customRoleId || null;
+    data.role = effectiveRole;
+    data.customRoleId = effectiveCustomRoleId;
     if (permissions !== undefined) {
       if (Array.isArray(permissions)) {
         data.permissions = permissions;

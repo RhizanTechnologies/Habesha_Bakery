@@ -1,5 +1,5 @@
 import { Router, Response } from 'express';
-import { authMiddleware, requireRole, type AuthRequest } from '../../middleware/auth.js';
+import { authMiddleware, requireRole, requirePrivilege, type AuthRequest } from '../../middleware/auth.js';
 import { ExpensesService } from './expenses.service.js';
 import { parsePagination } from '../../lib/pagination.js';
 
@@ -8,8 +8,8 @@ const expensesService = new ExpensesService();
 
 expensesRouter.use(authMiddleware);
 
-expensesRouter.get('/', requireRole('OWNER', 'ADMIN', 'CASHIER'), async (req: AuthRequest, res: Response) => {
-  const isCashier = req.user!.role === 'CASHIER';
+expensesRouter.get('/', requirePrivilege('access_expenses', 'OWNER', 'ADMIN', 'CASHIER'), async (req: AuthRequest, res: Response) => {
+  const isCashier = req.user!.role === 'CASHIER' || req.user!.role === 'EMPLOYEE';
   const admin = req.user!.role === 'OWNER' || req.user!.role === 'ADMIN';
   const branchId = admin
     ? ((req.query.branchId as string) || req.user?.branchId)
@@ -59,7 +59,7 @@ expensesRouter.get('/', requireRole('OWNER', 'ADMIN', 'CASHIER'), async (req: Au
   res.json(result.data);
 });
 
-expensesRouter.get('/:id', requireRole('OWNER', 'ADMIN', 'CASHIER'), async (req: AuthRequest, res: Response) => {
+expensesRouter.get('/:id', requirePrivilege('access_expenses', 'OWNER', 'ADMIN', 'CASHIER'), async (req: AuthRequest, res: Response) => {
   const result = await expensesService.getExpenseById(req.params.id, req.user!.role, req.user?.branchId);
   if (result.error) {
     return res.status(result.status || 500).json({ error: result.error });
@@ -67,7 +67,7 @@ expensesRouter.get('/:id', requireRole('OWNER', 'ADMIN', 'CASHIER'), async (req:
   res.json(result.data);
 });
 
-expensesRouter.post('/', requireRole('OWNER', 'ADMIN', 'CASHIER'), async (req: AuthRequest, res: Response) => {
+expensesRouter.post('/', requirePrivilege('access_expenses', 'OWNER', 'ADMIN', 'CASHIER'), async (req: AuthRequest, res: Response) => {
   const result = await expensesService.createExpense(req.body, req.user!.id, req.user!.role, req.user?.branchId);
   if (result.error) {
     return res.status(result.status || 500).json({ error: result.error });

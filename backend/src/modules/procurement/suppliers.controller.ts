@@ -1,5 +1,5 @@
 import { Router, Response } from 'express';
-import { authMiddleware, requireRole, type AuthRequest } from '../../middleware/auth.js';
+import { authMiddleware, requireRole, requirePrivilege, type AuthRequest } from '../../middleware/auth.js';
 import { SuppliersService } from './suppliers.service.js';
 
 export const suppliersRouter = Router();
@@ -25,7 +25,7 @@ suppliersRouter.get('/:id', async (req, res: Response) => {
   res.json(result.data);
 });
 
-suppliersRouter.post('/', requireRole('OWNER', 'ADMIN', 'CASHIER'), async (req: AuthRequest, res: Response) => {
+suppliersRouter.post('/', requirePrivilege('access_suppliers', 'OWNER', 'ADMIN', 'CASHIER'), async (req: AuthRequest, res: Response) => {
   const result = await suppliersService.createSupplier(req.body, req.user?.branchId);
   if (result.error) {
     return res.status(result.status || 500).json({ error: result.error });
@@ -33,7 +33,7 @@ suppliersRouter.post('/', requireRole('OWNER', 'ADMIN', 'CASHIER'), async (req: 
   res.status(201).json(result.data);
 });
 
-suppliersRouter.patch('/:id', requireRole('OWNER', 'ADMIN', 'CASHIER'), async (req, res: Response) => {
+suppliersRouter.patch('/:id', requirePrivilege('access_suppliers', 'OWNER', 'ADMIN', 'CASHIER'), async (req, res: Response) => {
   const result = await suppliersService.updateSupplier(req.params.id, req.body);
   if (result.error) {
     return res.status(result.status || 500).json({ error: result.error });
@@ -41,7 +41,7 @@ suppliersRouter.patch('/:id', requireRole('OWNER', 'ADMIN', 'CASHIER'), async (r
   res.json(result.data);
 });
 
-suppliersRouter.delete('/:id', requireRole('OWNER', 'ADMIN', 'CASHIER'), async (req: AuthRequest, res: Response) => {
+suppliersRouter.delete('/:id', requirePrivilege('access_suppliers', 'OWNER', 'ADMIN', 'CASHIER'), async (req: AuthRequest, res: Response) => {
   const result = await suppliersService.deleteSupplier(req.params.id);
   if (result.error) {
     return res.status(result.status || 500).json({ error: result.error });
