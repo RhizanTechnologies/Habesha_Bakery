@@ -395,7 +395,7 @@ export default function Dashboard() {
               </div>
             </CardHeader>
             <CardContent className="pt-2">
-              <div className="text-3xl sm:text-4xl font-extrabold text-emerald-950 tracking-tight font-heading">
+              <div className="text-2xl xs:text-3xl sm:text-4xl font-extrabold text-emerald-950 tracking-tight font-heading">
                 {isLoading ? <Skeleton className="h-10 w-48 rounded-xl bg-emerald-200/60" /> : money(todayGain)}
               </div>
               <div className="flex items-center justify-between mt-3 pt-3 border-t border-emerald-100">
@@ -552,7 +552,7 @@ export default function Dashboard() {
               </div>
             </CardHeader>
             <CardContent className="pt-2">
-              <div className="text-3xl sm:text-4xl font-extrabold text-rose-950 tracking-tight font-heading">
+              <div className="text-2xl xs:text-3xl sm:text-4xl font-extrabold text-rose-950 tracking-tight font-heading">
                 {isLoading ? <Skeleton className="h-10 w-48 rounded-xl bg-rose-200/60" /> : money(todayExpense)}
               </div>
               <div className="flex items-center justify-between mt-3 pt-3 border-t border-rose-100">
@@ -722,7 +722,7 @@ export default function Dashboard() {
       </div>
 
       {/* ── Secondary KPI Grid Cards (With Product Money Valuation & Supplier Purchases) ── */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-4 mb-8">
+      <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-2.5 sm:gap-4 mb-6 sm:mb-8">
         {/* Card 1: Net Profit */}
         <Card className="border-[#EDE4D5] bg-white rounded-3xl shadow-sm hover:shadow-md transition-all p-1">
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-1">

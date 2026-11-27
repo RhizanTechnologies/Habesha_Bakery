@@ -551,12 +551,14 @@ export class NotificationsService {
     titleKey: string,
     bodyKey: string,
     variables?: Record<string, any>,
-    link?: string
+    link?: string,
+    excludeUserId?: string
   ) {
     try {
       const users = await prisma.user.findMany({
         where: {
           isActive: true,
+          ...(excludeUserId ? { id: { not: excludeUserId } } : {}),
           OR: [
             { role: Role.OWNER },
             {

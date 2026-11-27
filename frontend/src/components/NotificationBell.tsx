@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useEffect, useRef } from 'react';
-import { useRouter } from 'next/navigation';
+import { useRouter, usePathname } from 'next/navigation';
 import { 
   Bell, 
   Check, 
@@ -52,6 +52,7 @@ function sanitizeNotificationLink(link?: string | null): string {
 export default function NotificationBell() {
   const { t } = useLanguage();
   const router = useRouter();
+  const pathname = usePathname();
   const [isOpen, setIsOpen] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [notifications, setNotifications] = useState<NotificationItem[]>([]);
@@ -106,35 +107,45 @@ export default function NotificationBell() {
 
             const isUrgent = item.type.includes('ADJUST') || item.type.includes('DISCREPANCY') || item.type.includes('OUT') || item.type.includes('LIMIT');
 
-            if (soundEnabled) {
-              playNotificationSound(isUrgent ? 'ALARM' : soundTheme);
-            }
+            // Do not pop up intrusive toast or sound if the user is already on the target page
+            const targetPath = item.link ? sanitizeNotificationLink(item.link).split('?')[0] : '';
+            const currentPath = pathname ? pathname.split('?')[0] : '';
+            const isAlreadyOnPage = Boolean(
+              targetPath &&
+              (currentPath === targetPath || (targetPath !== '/' && currentPath.startsWith(targetPath)))
+            );
 
-            if (vibrationEnabled) {
-              triggerVibration(isUrgent ? 'urgent' : 'double');
-            }
+            if (!isAlreadyOnPage) {
+              if (soundEnabled) {
+                playNotificationSound(isUrgent ? 'ALARM' : soundTheme);
+              }
 
-            if (toastsEnabled) {
-              const title = t(item.titleKey, item.variables);
-              const body = t(item.bodyKey, item.variables);
+              if (vibrationEnabled) {
+                triggerVibration(isUrgent ? 'urgent' : 'double');
+              }
 
-              toast(title, {
-                description: body,
-                duration: 8000,
-                icon: isUrgent ? (
-                  <AlertTriangle className="w-4 h-4 text-rose-600" />
-                ) : item.type.includes('LOW') ? (
-                  <AlertTriangle className="w-4 h-4 text-amber-500" />
-                ) : (
-                  <Bell className="w-4 h-4 text-[#E87A18]" />
-                ),
-                action: item.link ? {
-                  label: t('common.view') || 'View',
-                  onClick: () => {
-                    router.push(sanitizeNotificationLink(item.link));
-                  },
-                } : undefined,
-              });
+              if (toastsEnabled) {
+                const title = t(item.titleKey, item.variables);
+                const body = t(item.bodyKey, item.variables);
+
+                toast(title, {
+                  description: body,
+                  duration: 8000,
+                  icon: isUrgent ? (
+                    <AlertTriangle className="w-4 h-4 text-rose-600" />
+                  ) : item.type.includes('LOW') ? (
+                    <AlertTriangle className="w-4 h-4 text-amber-500" />
+                  ) : (
+                    <Bell className="w-4 h-4 text-[#E87A18]" />
+                  ),
+                  action: item.link ? {
+                    label: t('common.view') || 'View',
+                    onClick: () => {
+                      router.push(sanitizeNotificationLink(item.link));
+                    },
+                  } : undefined,
+                });
+              }
             }
           }
         }

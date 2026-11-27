@@ -65,27 +65,27 @@ export default function SettingsPage() {
   };
 
   return (
-    <div className="min-h-screen bg-[#FAF7EE] p-4 sm:p-6 lg:p-8">
-      <div className="max-w-4xl mx-auto space-y-6">
+    <div className="min-h-screen bg-[#FAF7EE] p-2.5 xs:p-4 sm:p-6 lg:p-8">
+      <div className="max-w-4xl mx-auto space-y-4 xs:space-y-6">
         {/* Header */}
-        <div className="bg-white rounded-3xl p-6 sm:p-8 border border-[#EADBCC] shadow-sm relative overflow-hidden">
+        <div className="bg-white rounded-2xl sm:rounded-3xl p-4 xs:p-6 sm:p-8 border border-[#EADBCC] shadow-sm relative overflow-hidden">
           <div className="absolute top-0 right-0 w-64 h-64 bg-gradient-to-br from-[#E87A18]/10 to-transparent rounded-full blur-2xl pointer-events-none" />
 
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 relative z-10">
-            <div className="flex items-center gap-4">
-              <div className="w-14 h-14 rounded-2xl bg-[#4A2E1B] flex items-center justify-center text-[#E87A18] shadow-md shadow-[#4A2E1B]/20">
-                <Settings className="w-7 h-7 animate-spin-slow" />
+          <div className="flex flex-col md:flex-row md:items-center justify-between gap-3.5 xs:gap-4 relative z-10">
+            <div className="flex items-center gap-3 xs:gap-4">
+              <div className="w-12 h-12 xs:w-14 xs:h-14 rounded-2xl bg-[#4A2E1B] flex items-center justify-center text-[#E87A18] shadow-md shadow-[#4A2E1B]/20 shrink-0">
+                <Settings className="w-6 h-6 xs:w-7 xs:h-7 animate-spin-slow" />
               </div>
-              <div>
-                <div className="flex items-center gap-2">
-                  <h1 className="text-2xl sm:text-3xl font-extrabold text-[#4A2E1B] tracking-tight">
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <h1 className="text-xl xs:text-2xl sm:text-3xl font-extrabold text-[#4A2E1B] tracking-tight">
                     Owner Settings
                   </h1>
-                  <span className="px-2.5 py-0.5 rounded-full text-xs font-bold bg-[#E87A18]/15 text-[#E87A18] border border-[#E87A18]/30">
+                  <span className="px-2 xs:px-2.5 py-0.5 rounded-full text-[10px] xs:text-xs font-bold bg-[#E87A18]/15 text-[#E87A18] border border-[#E87A18]/30">
                     Executive
                   </span>
                 </div>
-                <p className="text-sm text-[#8C7361] mt-1">
+                <p className="text-xs xs:text-sm text-[#8C7361] mt-0.5 xs:mt-1">
                   {t("settings.subtitle")}
                 </p>
               </div>
@@ -95,7 +95,7 @@ export default function SettingsPage() {
               <button
                 onClick={handleSave}
                 disabled={isSaving || selectedType === calendarType}
-                className={`inline-flex items-center justify-center gap-2 px-6 py-3 rounded-2xl font-bold text-sm shadow-md transition-all duration-200 ${
+                className={`w-full md:w-auto inline-flex items-center justify-center gap-2 px-4 xs:px-6 py-2.5 xs:py-3 rounded-xl sm:rounded-2xl font-bold text-xs xs:text-sm shadow-md transition-all duration-200 ${
                   selectedType !== calendarType
                     ? 'bg-[#E87A18] hover:bg-[#d66d12] text-white hover:scale-105 active:scale-95 shadow-[#E87A18]/25'
                     : 'bg-zinc-100 text-zinc-400 cursor-not-allowed shadow-none'
@@ -118,36 +118,36 @@ export default function SettingsPage() {
         </div>
 
         {/* Calendar Selection Main Card */}
-        <div className="bg-white rounded-3xl p-6 sm:p-8 border border-[#EADBCC] shadow-sm space-y-6">
+        <div className="bg-white rounded-2xl sm:rounded-3xl p-4 xs:p-6 sm:p-8 border border-[#EADBCC] shadow-sm space-y-4 xs:space-y-6">
           <div className="flex items-start justify-between">
             <div className="space-y-1">
               <div className="flex items-center gap-2">
-                <Calendar className="w-5 h-5 text-[#E87A18]" />
-                <h2 className="text-lg sm:text-xl font-bold text-[#4A2E1B]">
+                <Calendar className="w-4 h-4 xs:w-5 xs:h-5 text-[#E87A18]" />
+                <h2 className="text-base xs:text-lg sm:text-xl font-bold text-[#4A2E1B]">
                   {t("settings.calendarCardTitle")}
                 </h2>
               </div>
-              <p className="text-sm text-[#8C7361]">
+              <p className="text-xs xs:text-sm text-[#8C7361]">
                 {t("settings.calendarCardDesc")}
               </p>
             </div>
           </div>
 
           {/* Cards for Calendar Choice */}
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-2">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3 xs:gap-4 pt-1 xs:pt-2">
             {/* 1. Ethiopian Calendar Option */}
             <div
               onClick={() => isOwner && setSelectedType('ETHIOPIAN')}
-              className={`relative cursor-pointer rounded-2xl p-5 border-2 transition-all duration-200 ${
+              className={`relative cursor-pointer rounded-xl sm:rounded-2xl p-4 xs:p-5 border-2 transition-all duration-200 ${
                 selectedType === 'ETHIOPIAN'
                   ? 'border-[#E87A18] bg-[#FAF5EE] shadow-md shadow-[#E87A18]/10 ring-2 ring-[#E87A18]/20'
                   : 'border-[#EADBCC] hover:border-[#8C7361]/50 bg-white'
               }`}
             >
               <div className="flex items-start justify-between gap-3">
-                <div className="flex items-center gap-3">
+                <div className="flex items-center gap-2.5 xs:gap-3 min-w-0">
                   <div
-                    className={`w-10 h-10 rounded-xl flex items-center justify-center font-bold text-sm ${
+                    className={`w-9 h-9 xs:w-10 xs:h-10 rounded-xl flex items-center justify-center font-bold text-sm shrink-0 ${
                       selectedType === 'ETHIOPIAN'
                         ? 'bg-[#E87A18] text-white'
                         : 'bg-zinc-100 text-zinc-600'
@@ -155,37 +155,37 @@ export default function SettingsPage() {
                   >
                     🇪🇹
                   </div>
-                  <div>
-                    <h3 className="font-bold text-[#4A2E1B] text-base">
+                  <div className="min-w-0">
+                    <h3 className="font-bold text-[#4A2E1B] text-sm xs:text-base truncate">
                       Ethiopian Calendar
                     </h3>
-                    <p className="text-xs text-[#8C7361]">የኢትዮጵያ ዘመን አቆጣጠር</p>
+                    <p className="text-[11px] xs:text-xs text-[#8C7361] truncate">የኢትዮጵያ ዘመን አቆጣጠር</p>
                   </div>
                 </div>
 
                 <div
-                  className={`w-6 h-6 rounded-full flex items-center justify-center border transition-all ${
+                  className={`w-5 h-5 xs:w-6 xs:h-6 rounded-full flex items-center justify-center border transition-all shrink-0 ${
                     selectedType === 'ETHIOPIAN'
                       ? 'border-[#E87A18] bg-[#E87A18] text-white'
                       : 'border-zinc-300 bg-white'
                   }`}
                 >
-                  {selectedType === 'ETHIOPIAN' && <Check className="w-3.5 h-3.5 stroke-[3]" />}
+                  {selectedType === 'ETHIOPIAN' && <Check className="w-3 h-3 xs:w-3.5 xs:h-3.5 stroke-[3]" />}
                 </div>
               </div>
 
-              <div className="mt-4 pt-4 border-t border-[#EADBCC]/60 space-y-2">
-                <div className="flex items-center justify-between text-xs">
+              <div className="mt-3.5 xs:mt-4 pt-3 xs:pt-4 border-t border-[#EADBCC]/60 space-y-2">
+                <div className="flex items-center justify-between text-[11px] xs:text-xs">
                   <span className="text-[#8C7361]">{t("settings.todayDateLabel")}</span>
-                  <span className="font-bold text-[#4A2E1B] bg-white px-2.5 py-1 rounded-lg border border-[#EADBCC]">
+                  <span className="font-bold text-[#4A2E1B] bg-white px-2 py-0.5 xs:px-2.5 xs:py-1 rounded-md xs:rounded-lg border border-[#EADBCC]">
                     {formatPureEthDate(today)}
                   </span>
                 </div>
-                <div className="flex items-center justify-between text-xs">
+                <div className="flex items-center justify-between text-[11px] xs:text-xs">
                   <span className="text-[#8C7361]">{t("settings.monthsFormatLabel")}</span>
                   <span className="font-semibold text-zinc-700">{t("settings.monthsFormatEth")}</span>
                 </div>
-                <div className="flex items-center justify-between text-xs">
+                <div className="flex items-center justify-between text-[11px] xs:text-xs">
                   <span className="text-[#8C7361]">{t("settings.fiscalCycleLabel")}</span>
                   <span className="font-semibold text-emerald-700">{t("settings.fiscalCycleEth")}</span>
                 </div>
@@ -195,46 +195,46 @@ export default function SettingsPage() {
             {/* 2. Gregorian Calendar Option */}
             <div
               onClick={() => isOwner && setSelectedType('GREGORIAN')}
-              className={`relative cursor-pointer rounded-2xl p-5 border-2 transition-all duration-200 ${
+              className={`relative cursor-pointer rounded-xl sm:rounded-2xl p-4 xs:p-5 border-2 transition-all duration-200 ${
                 selectedType === 'GREGORIAN'
                   ? 'border-[#E87A18] bg-[#FAF5EE] shadow-md shadow-[#E87A18]/10 ring-2 ring-[#E87A18]/20'
                   : 'border-[#EADBCC] hover:border-[#8C7361]/50 bg-white'
               }`}
             >
               <div className="flex items-start justify-between gap-3">
-                <div className="flex items-center gap-3">
+                <div className="flex items-center gap-2.5 xs:gap-3 min-w-0">
                   <div
-                    className={`w-10 h-10 rounded-xl flex items-center justify-center font-bold text-sm ${
+                    className={`w-9 h-9 xs:w-10 xs:h-10 rounded-xl flex items-center justify-center font-bold text-sm shrink-0 ${
                       selectedType === 'GREGORIAN'
                         ? 'bg-[#E87A18] text-white'
                         : 'bg-zinc-100 text-zinc-600'
                     }`}
                   >
-                    <Globe className="w-5 h-5" />
+                    <Globe className="w-4 h-4 xs:w-5 xs:h-5" />
                   </div>
-                  <div>
-                    <h3 className="font-bold text-[#4A2E1B] text-base">
+                  <div className="min-w-0">
+                    <h3 className="font-bold text-[#4A2E1B] text-sm xs:text-base truncate">
                       Gregorian Calendar (&quot;Gero&quot;)
                     </h3>
-                    <p className="text-xs text-[#8C7361]">ዓለም አቀፍ / ፈረንጅ ዘመን አቆጣጠር</p>
+                    <p className="text-[11px] xs:text-xs text-[#8C7361] truncate">ዓለም አቀፍ / ፈረንጅ ዘመን አቆጣጠር</p>
                   </div>
                 </div>
 
                 <div
-                  className={`w-6 h-6 rounded-full flex items-center justify-center border transition-all ${
+                  className={`w-5 h-5 xs:w-6 xs:h-6 rounded-full flex items-center justify-center border transition-all shrink-0 ${
                     selectedType === 'GREGORIAN'
                       ? 'border-[#E87A18] bg-[#E87A18] text-white'
                       : 'border-zinc-300 bg-white'
                   }`}
                 >
-                  {selectedType === 'GREGORIAN' && <Check className="w-3.5 h-3.5 stroke-[3]" />}
+                  {selectedType === 'GREGORIAN' && <Check className="w-3 h-3 xs:w-3.5 xs:h-3.5 stroke-[3]" />}
                 </div>
               </div>
 
-              <div className="mt-4 pt-4 border-t border-[#EADBCC]/60 space-y-2">
-                <div className="flex items-center justify-between text-xs">
+              <div className="mt-3.5 xs:mt-4 pt-3 xs:pt-4 border-t border-[#EADBCC]/60 space-y-2">
+                <div className="flex items-center justify-between text-[11px] xs:text-xs">
                   <span className="text-[#8C7361]">{t("settings.todayDateLabel")}</span>
-                  <span className="font-bold text-[#4A2E1B] bg-white px-2.5 py-1 rounded-lg border border-[#EADBCC]">
+                  <span className="font-bold text-[#4A2E1B] bg-white px-2 py-0.5 xs:px-2.5 xs:py-1 rounded-md xs:rounded-lg border border-[#EADBCC]">
                     {formatGregDate(today)}
                   </span>
                 </div>

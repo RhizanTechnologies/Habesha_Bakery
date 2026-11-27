@@ -97,14 +97,14 @@ export const LanguageSelector: React.FC<LanguageSelectorProps> = ({
       <button
         type="button"
         onClick={() => setIsOpen((prev) => !prev)}
-        className="flex items-center gap-1.5 sm:gap-2 px-2.5 sm:px-3 py-1.5 rounded-xl text-xs sm:text-sm font-extrabold bg-[#FAF7EE] hover:bg-[#F4ECE1] text-[#2C1B10] border border-[#EDE4D5] transition-all shadow-2xs focus:outline-none focus:ring-2 focus:ring-[#E87A18]/40 cursor-pointer"
+        className="flex items-center gap-1 xs:gap-1.5 sm:gap-2 px-2 xs:px-2.5 sm:px-3 py-1 xs:py-1.5 rounded-lg xs:rounded-xl text-xs sm:text-sm font-extrabold bg-[#FAF7EE] hover:bg-[#F4ECE1] text-[#2C1B10] border border-[#EDE4D5] transition-all shadow-2xs focus:outline-none focus:ring-2 focus:ring-[#E87A18]/40 cursor-pointer"
         aria-haspopup="true"
         aria-expanded={isOpen}
       >
-        <Globe className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-[#E87A18] shrink-0" />
-        <span className="hidden sm:inline font-bold tracking-tight">{activeOption.nativeName}</span>
-        <span className="sm:hidden font-extrabold tracking-tight">{getShortLabel(activeOption.code)}</span>
-        <ChevronDown className={`w-3.5 h-3.5 text-[#8C7361] transition-transform duration-200 shrink-0 ${isOpen ? 'rotate-180' : ''}`} />
+        <Globe className="w-3 h-3 xs:w-3.5 xs:h-3.5 sm:w-4 sm:h-4 text-[#E87A18] shrink-0" />
+        <span className="hidden md:inline font-bold tracking-tight">{activeOption.nativeName}</span>
+        <span className="md:hidden font-extrabold tracking-tight">{getShortLabel(activeOption.code)}</span>
+        <ChevronDown className={`w-3 h-3 xs:w-3.5 xs:h-3.5 text-[#8C7361] transition-transform duration-200 shrink-0 ${isOpen ? 'rotate-180' : ''}`} />
       </button>
 
       {isOpen && (

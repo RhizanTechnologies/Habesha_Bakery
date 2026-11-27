@@ -10,9 +10,9 @@ export default function QueryProvider({ children }: { children: React.ReactNode 
         defaultOptions: {
           queries: {
             refetchOnWindowFocus: false,
-            refetchOnMount: false,
+            refetchOnMount: true,
             refetchOnReconnect: true,
-            staleTime: 30 * 1000, // 30 seconds fresh cache for instant page switching without skeletons
+            staleTime: 5 * 1000, // 5s staleTime allows smooth instant cached render, but refreshes promptly when stale
             gcTime: 15 * 60 * 1000, // Keep in memory cache for 15 minutes
             retry: 1, // Avoid long waits on retries
           },

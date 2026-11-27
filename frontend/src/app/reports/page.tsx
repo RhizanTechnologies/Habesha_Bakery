@@ -56,6 +56,7 @@ interface ProductItem {
   currentHouseStock: number | string;
   buyPrice?: number | string | null;
   basePrice?: number | string | null;
+  branchStocks?: Array<{ branchId: string; branchName: string; stock: number }>;
 }
 
 export default function FinancialReportsPage() {
@@ -244,7 +245,7 @@ export default function FinancialReportsPage() {
   const productValuation = useMemo(() => {
     return products.reduce((sum, p) => {
       const qty = Number(p.currentHouseStock || 0);
-      const price = Number(p.buyPrice || p.basePrice || 0);
+      const price = Number(p.basePrice || p.buyPrice || 0);
       return sum + qty * price;
     }, 0);
   }, [products]);
@@ -2517,8 +2518,9 @@ export default function FinancialReportsPage() {
                       .filter((p) => !searchFilter || p.name.toLowerCase().includes(searchFilter.toLowerCase()))
                       .map((p) => {
                         const qty = Number(p.currentHouseStock || 0);
-                        const price = Number(p.buyPrice || p.basePrice || 0);
-                        const val = qty * price;
+                        const sellPrice = Number(p.basePrice || p.buyPrice || 0);
+                        const buyCost = Number(p.buyPrice || 0);
+                        const val = qty * sellPrice;
                         return (
                           <div
                             key={p.id}
@@ -2544,8 +2546,13 @@ export default function FinancialReportsPage() {
                                 <span className="font-bold text-[#2C1B10]">{qty.toLocaleString()} {p.unitType}</span>
                               </div>
                               <div>
-                                <span className="text-[10px] text-[#8C7361] block font-sans">{t('reports.unitPriceLabel')}</span>
-                                <span className="text-zinc-700">{price.toFixed(2)} ETB</span>
+                                <span className="text-[10px] text-[#8C7361] block font-sans">{t('products.colSellingPrice') || 'Selling Price'}</span>
+                                <span className="text-[#2C1B10] font-bold">{sellPrice.toFixed(2)} ETB</span>
+                                {buyCost > 0 && (
+                                  <span className="text-[10px] text-zinc-400 block font-sans">
+                                    Cost: {buyCost.toFixed(2)} ETB
+                                  </span>
+                                )}
                               </div>
                             </div>
                           </div>
@@ -2562,7 +2569,7 @@ export default function FinancialReportsPage() {
                         <TableHead>{t('reports.productNameCol')}</TableHead>
                         <TableHead>{t('expenses.category')}</TableHead>
                         <TableHead className="text-right">{t('reports.houseStockCol')}</TableHead>
-                        <TableHead className="text-right">{t('reports.unitPriceLabel')}</TableHead>
+                        <TableHead className="text-right">{t('products.colSellingPrice') || 'Selling Price'}</TableHead>
                         <TableHead className="text-right font-extrabold pr-4">{t('reports.totalValueCol')}</TableHead>
                       </TableRow>
                     </TableHeader>
@@ -2578,8 +2585,9 @@ export default function FinancialReportsPage() {
                           .filter((p) => !searchFilter || p.name.toLowerCase().includes(searchFilter.toLowerCase()))
                           .map((p) => {
                             const qty = Number(p.currentHouseStock || 0);
-                            const price = Number(p.buyPrice || p.basePrice || 0);
-                            const val = qty * price;
+                            const sellPrice = Number(p.basePrice || p.buyPrice || 0);
+                            const buyCost = Number(p.buyPrice || 0);
+                            const val = qty * sellPrice;
                             return (
                               <TableRow key={p.id}>
                                 <TableCell className="font-bold text-[#2C1B10] text-xs">
@@ -2589,10 +2597,31 @@ export default function FinancialReportsPage() {
                                   {p.category?.name || 'General'}
                                 </TableCell>
                                 <TableCell className="text-right font-mono text-xs font-bold text-[#2C1B10]">
-                                  {qty.toLocaleString()} {p.unitType}
+                                  <div>{qty.toLocaleString()} {p.unitType}</div>
+                                  {p.branchStocks && p.branchStocks.length > 0 && (
+                                    <div className="flex flex-wrap justify-end gap-1 mt-0.5">
+                                      {p.branchStocks.map((bs) => (
+                                        <span
+                                          key={bs.branchId}
+                                          className={`text-[9px] px-1 py-0.2 rounded border font-sans ${
+                                            selectedBranchId === bs.branchId
+                                              ? 'bg-amber-100 border-amber-300 text-amber-950 font-bold'
+                                              : 'bg-zinc-50 border-zinc-200 text-[#4A2E1B]'
+                                          }`}
+                                        >
+                                          {bs.branchName.replace(' Branch', '').replace(' selling branch', ' (Garment)')}: {bs.stock}
+                                        </span>
+                                      ))}
+                                    </div>
+                                  )}
                                 </TableCell>
-                                <TableCell className="text-right font-mono text-xs text-[#8C7361]">
-                                  {price.toFixed(2)} ETB
+                                <TableCell className="text-right font-mono text-xs text-[#2C1B10]">
+                                  <span className="font-bold">{sellPrice.toFixed(2)} ETB</span>
+                                  {buyCost > 0 && (
+                                    <span className="text-[10px] text-zinc-400 block font-sans">
+                                      Cost: {buyCost.toFixed(2)} ETB
+                                    </span>
+                                  )}
                                 </TableCell>
                                 <TableCell className="text-right font-mono text-xs font-extrabold text-amber-900 pr-4">
                                   {money(val)}
