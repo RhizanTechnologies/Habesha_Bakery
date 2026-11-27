@@ -277,12 +277,15 @@ export default function ProductCategoriesPage() {
                 }
                 setIsSubmitting(true);
                 const formData = new FormData(event.currentTarget);
+                const chosenRole = formData.get("productionRole") as string;
+                const prodRole = chosenRole || subParent.productionRole || undefined;
                 try {
                   await api.post("/product-categories", {
                     name: formData.get("name"),
                     nameLatin: (formData.get("nameLatin") as string)?.trim() || undefined,
                     type: subParent.type,
                     parentId: subParent.id,
+                    productionRole: prodRole,
                   });
                   toast.success(t('categories.toastSubcategoryCreated'));
                   setIsSubcategoryOpen(false);
@@ -299,11 +302,15 @@ export default function ProductCategoriesPage() {
             >
               <div className="space-y-4 mb-4">
                 <div>
-                  <label className="text-xs font-semibold text-[#2C1B10] block mb-1">{t('categories.colCategoryName')} (Ge'ez / በግዕዝ)</label>
+                  <label className="text-xs font-semibold text-[#2C1B10] block mb-1">
+                    {t('categories.colSubcategoryName') || 'Subcategory Name'} (Ge'ez / በግዕዝ)
+                  </label>
                   <Input name="name" required placeholder={t('categories.subcategoryAmharicPlaceholder')} className="h-10" />
                 </div>
                 <div>
-                  <label className="text-xs font-semibold text-[#2C1B10] block mb-1">{t('categories.colCategoryName')} (Latin / በላቲን)</label>
+                  <label className="text-xs font-semibold text-[#2C1B10] block mb-1">
+                    {t('categories.colSubcategoryName') || 'Subcategory Name'} (Latin / በላቲን)
+                  </label>
                   <Input name="nameLatin" placeholder={t('categories.subcategoryEnglishPlaceholder')} className="h-10 font-mono" />
                 </div>
                 <div>
@@ -328,8 +335,27 @@ export default function ProductCategoriesPage() {
                 </div>
                 <div>
                   <label className="text-xs font-semibold text-[#2C1B10] mb-1 block">{t('categories.colProductType')}</label>
-                  <Input value={subParent?.type || ""} readOnly placeholder={t('categories.inheritedRolePlaceholder')} className="h-10 bg-zinc-50" />
+                  <Input value={subParent?.type || ""} readOnly placeholder={t('categories.inheritedRolePlaceholder')} className="h-10 bg-zinc-50 font-bold" />
                 </div>
+                {subParent?.type === "PRODUCED" && (
+                  <div>
+                    <label className="text-xs font-semibold text-[#2C1B10] mb-1 block">{t('categories.stationRole') || 'Production Station / Role'}</label>
+                    <select
+                      name="productionRole"
+                      defaultValue={subParent.productionRole || "BAKER"}
+                      className="w-full border rounded-md h-10 px-3 border-input bg-background text-sm"
+                    >
+                      <option value="BAKER">🥖 {t('production.roleBaker') || 'Baker (Bread & Buns)'}</option>
+                      <option value="CAKE_WORKER">🎂 {t('production.roleCakeWorker') || 'Cake Worker (Cakes & Pastries)'}</option>
+                      <option value="SAMBUSA_WORKER">🥟 {t('production.roleSambusaWorker') || 'Sambusa Worker (Hot Snacks)'}</option>
+                    </select>
+                    <p className="mt-1 text-[11px] text-zinc-500">
+                      {subParent.productionRole
+                        ? `Auto-inherited from parent category (${subParent.productionRole}), can be adjusted if needed.`
+                        : (t('categories.stationRoleDesc') || 'Scopes production batches for workers with this role.')}
+                    </p>
+                  </div>
+                )}
               </div>
               <DialogFooter className="flex flex-col sm:flex-row gap-2 w-full pt-2">
                 <Button
@@ -621,14 +647,14 @@ export default function ProductCategoriesPage() {
                 <div className="space-y-4 mb-4">
                   <div>
                     <label className="text-xs font-semibold text-[#2C1B10] block mb-1">
-                      {editingCategory.parentId ? `${t('categories.subcategory')} Name (Ge'ez / በግዕዝ)` : `${t('categories.colCategoryName')} (Ge'ez / በግዕዝ)`}
+                      {editingCategory.parentId ? `${t('categories.colSubcategoryName') || 'Subcategory Name'} (Ge'ez / በግዕዝ)` : `${t('categories.colCategoryName')} (Ge'ez / በግዕዝ)`}
                     </label>
                     <Input name="name" required defaultValue={editingCategory.name} className="h-10" />
                   </div>
 
                   <div>
                     <label className="text-xs font-semibold text-[#2C1B10] block mb-1">
-                      {editingCategory.parentId ? `${t('categories.subcategory')} Name (Latin / በላቲን)` : `${t('categories.colCategoryName')} (Latin / በላቲን)`}
+                      {editingCategory.parentId ? `${t('categories.colSubcategoryName') || 'Subcategory Name'} (Latin / በላቲን)` : `${t('categories.colCategoryName')} (Latin / በላቲን)`}
                     </label>
                     <Input name="nameLatin" defaultValue={editingCategory.nameLatin || ""} placeholder={t('categories.subcategoryEnglishPlaceholder')} className="h-10 font-mono" />
                   </div>

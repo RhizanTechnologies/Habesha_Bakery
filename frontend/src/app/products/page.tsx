@@ -31,6 +31,13 @@ interface FinancialCategory {
   type: "REVENUE" | "EXPENSE";
 }
 
+export interface BranchStockItem {
+  branchId: string;
+  branchName: string;
+  isHub?: boolean;
+  stock: number;
+}
+
 interface Product {
   id: string;
   name: string;
@@ -46,8 +53,11 @@ interface Product {
   financialCategoryId?: string;
   financialCategory?: FinancialCategory;
   currentHouseStock?: number;
+  branchStocks?: BranchStockItem[];
   totalProduced?: number;
   totalDelivered?: number;
+  totalTransferredIn?: number;
+  totalTransferredOut?: number;
   totalSold?: number;
   totalDamaged?: number;
 }
@@ -85,15 +95,17 @@ export default function ProductsPage() {
       const params: Record<string, string> = {};
       if (selectedBranchId) params.branchId = selectedBranchId;
 
-      const [resProd, resCat, resFinCat] = await Promise.all([
+      const [resProd, resCat, resFinCat, resTransfers] = await Promise.all([
         api.get("/products", { params }),
         api.get("/product-categories"),
         api.get("/financial-categories?type=REVENUE"),
+        selectedBranchId ? api.get(`/transfers?branchId=${selectedBranchId}&status=DISPATCHED`).catch(() => ({ data: { transfers: [] } })) : Promise.resolve({ data: { transfers: [] } }),
       ]);
       return {
         products: (resProd.data || []) as Product[],
         categories: (resCat.data || []) as ProductCategory[],
         financialCategories: (resFinCat.data || []) as FinancialCategory[],
+        pendingTransfers: (resTransfers?.data?.transfers || []).filter((t: any) => t.destBranchId === selectedBranchId && t.status === 'DISPATCHED'),
       };
     },
   });
@@ -101,6 +113,7 @@ export default function ProductsPage() {
   const products = pageData?.products || [];
   const categories = pageData?.categories || [];
   const financialCategories = pageData?.financialCategories || [];
+  const pendingTransfers = pageData?.pendingTransfers || [];
 
   const mainCategories = categories.filter((c) => !c.parentId);
   const activeSubCategories = selectedMainCategory === 'ALL'
@@ -378,6 +391,31 @@ export default function ProductsPage() {
         </div>
       </div>
 
+      {/* Pending In-Transit Transfers Alert Banner */}
+      {pendingTransfers.length > 0 && (
+        <div className="mb-4 p-3.5 rounded-2xl bg-amber-50/90 border border-amber-300 text-amber-950 flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-xs">
+          <div className="flex items-center gap-3">
+            <div className="w-8 h-8 rounded-xl bg-amber-100 flex items-center justify-center shrink-0">
+              <Truck className="w-4 h-4 text-[#E87A18]" />
+            </div>
+            <div>
+              <p className="font-extrabold text-xs text-[#2C1B10]">
+                {pendingTransfers.length} incoming transfer shipment(s) en route to this branch ({pendingTransfers.reduce((s: number, t: any) => s + (t.loavesCount || 0), 0)} units).
+              </p>
+              <p className="text-[11px] text-[#8C7361] mt-0.5">
+                Receive & verify delivery under Transfers to credit into this branch&apos;s available shelf stock.
+              </p>
+            </div>
+          </div>
+          <Link
+            href="/transfers"
+            className="px-3.5 py-1.5 rounded-xl bg-[#E87A18] hover:bg-[#D96B10] text-white text-xs font-black self-start sm:self-auto shrink-0 transition-colors shadow-xs"
+          >
+            Go to Transfers →
+          </Link>
+        </div>
+      )}
+
       {/* Content Rendering: List / Table View Only */}
       {isLoading ? (
         <TableSkeleton rows={8} columns={11} hasActions={true} />
@@ -417,6 +455,25 @@ export default function ProductsPage() {
                           {stockQty} {prod.unitType}
                         </span>
                       </div>
+
+                      {/* Per-Branch breakdown on mobile touch card */}
+                      {prod.branchStocks && prod.branchStocks.length > 0 && (
+                        <div className="flex flex-wrap gap-1 mt-2 pt-2 border-t border-[#EDE4D5]/60">
+                          {prod.branchStocks.map((bs) => (
+                            <span
+                              key={bs.branchId}
+                              className={`text-[9px] px-1.5 py-0.5 rounded-md border font-mono ${
+                                selectedBranchId === bs.branchId
+                                  ? 'bg-amber-100 border-amber-300 text-amber-950 font-bold'
+                                  : 'bg-[#FAF6F0] border-[#EDE4D5] text-[#4A2E1B]'
+                              }`}
+                            >
+                              <span className="font-sans font-medium text-[#8C7361] mr-1">{bs.branchName.replace(' Branch', '').replace(' selling branch', ' (Garment)')}:</span>
+                              <strong>{bs.stock}</strong>
+                            </span>
+                          ))}
+                        </div>
+                      )}
                     </div>
                   </div>
 
@@ -511,11 +568,39 @@ export default function ProductsPage() {
                         </span>
                       </TableCell>
                       <TableCell className="py-3 px-3 text-center">
-                        <span className={`inline-flex items-center justify-center px-2.5 py-1 rounded-full text-xs font-black font-mono border shadow-2xs ${
-                          stockQty > 20 ? 'bg-emerald-100 text-emerald-800 border-emerald-200' : stockQty > 0 ? 'bg-amber-100 text-amber-900 border-amber-200' : 'bg-rose-100 text-rose-800 border-rose-200'
-                        }`}>
-                          {stockQty} <span className="text-[10px] ml-1 font-sans font-bold">{prod.unitType}</span>
-                        </span>
+                        <div className="flex flex-col items-center gap-1">
+                          <span className={`inline-flex items-center justify-center px-2.5 py-1 rounded-full text-xs font-black font-mono border shadow-2xs ${
+                            stockQty > 20 ? 'bg-emerald-100 text-emerald-800 border-emerald-200' : stockQty > 0 ? 'bg-amber-100 text-amber-900 border-amber-200' : 'bg-rose-100 text-rose-800 border-rose-200'
+                          }`}>
+                            {stockQty} <span className="text-[10px] ml-1 font-sans font-bold">{prod.unitType}</span>
+                          </span>
+
+                          {/* Per-Branch Inventory Breakdown */}
+                          {prod.branchStocks && prod.branchStocks.length > 0 && (
+                            <div className="flex flex-wrap items-center justify-center gap-1 mt-0.5 max-w-[220px]">
+                              {prod.branchStocks.map((bs) => {
+                                const isCurrentBranch = selectedBranchId === bs.branchId;
+                                const shortName = bs.branchName.replace(' Branch', '').replace(' selling branch', ' (Garment)').replace(' Main', '');
+                                return (
+                                  <span
+                                    key={bs.branchId}
+                                    className={`inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded-md border font-mono ${
+                                      isCurrentBranch
+                                        ? 'bg-amber-100/90 border-amber-300 text-amber-950 font-bold ring-1 ring-amber-400/50'
+                                        : bs.stock > 0
+                                        ? 'bg-zinc-50 border-zinc-200 text-[#4A2E1B]'
+                                        : 'bg-zinc-50/40 border-zinc-100 text-zinc-400'
+                                    }`}
+                                    title={`${bs.branchName}: ${bs.stock} ${prod.unitType}`}
+                                  >
+                                    <span className="font-sans font-semibold text-[9px] text-[#8C7361]">{shortName}:</span>
+                                    <span className="font-extrabold">{bs.stock}</span>
+                                  </span>
+                                );
+                              })}
+                            </div>
+                          )}
+                        </div>
                       </TableCell>
                       <TableCell className="py-3 px-3">
                         <div className="font-extrabold text-[#E87A18] text-xs font-mono">{Number(prod.basePrice).toFixed(2)} ETB</div>
@@ -524,7 +609,12 @@ export default function ProductsPage() {
                         )}
                       </TableCell>
                       <TableCell className="py-3 px-2 text-center font-bold text-[#2C1B10] text-xs font-mono">{prod.totalProduced || 0}</TableCell>
-                      <TableCell className="py-3 px-2 text-center font-extrabold text-[#E87A18] text-xs font-mono">{prod.totalDelivered || 0}</TableCell>
+                      <TableCell className="py-3 px-2 text-center font-extrabold text-[#E87A18] text-xs font-mono">
+                        <div>{prod.totalDelivered || 0}</div>
+                        {selectedBranchId && (prod.totalTransferredOut || 0) > 0 && (
+                          <span className="text-[9px] font-sans font-normal text-rose-600 block">(-{prod.totalTransferredOut} sent)</span>
+                        )}
+                      </TableCell>
                       <TableCell className="py-3 px-2 text-center font-bold text-[#2C1B10] text-xs font-mono">{prod.totalSold || 0}</TableCell>
                       <TableCell className="py-3 px-2 text-center font-bold text-xs font-mono">
                         {(prod.totalDamaged || 0) > 0 ? (

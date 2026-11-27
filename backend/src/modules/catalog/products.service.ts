@@ -14,14 +14,23 @@ function decimalToNum(v: unknown) {
   return undefined;
 }
 
+export interface BranchStockItem {
+  branchId: string;
+  branchName: string;
+  isHub: boolean;
+  stock: number;
+}
+
 export class ProductsService {
   private static stockMapCache = new Map<string, { timestamp: number; data: Map<string, number> }>();
   private static productsResultCache = new Map<string, { timestamp: number; data: any[] }>();
+  private static branchStocksCache = new Map<string, { timestamp: number; data: Map<string, BranchStockItem[]> }>();
   private static readonly CACHE_TTL_MS = 30 * 1000; // 30 seconds
 
   public static clearCache() {
     ProductsService.stockMapCache.clear();
     ProductsService.productsResultCache.clear();
+    ProductsService.branchStocksCache.clear();
   }
 
   async getProducts(
@@ -126,9 +135,10 @@ export class ProductsService {
       return { data: list };
     }
 
-    // Run stock map and cumulative metrics in parallel to eliminate sequential round-trip waterfalls
+    // Run stock map, branch breakdown, and cumulative metrics in parallel to eliminate sequential round-trip waterfalls
     const [
       stockMap,
+      branchBreakdownMap,
       producedAgg,
       deliveredAgg,
       conversionsToAgg,
@@ -136,8 +146,11 @@ export class ProductsService {
       salesAgg,
       damagedAgg,
       customerCreditList,
+      transfersInAgg,
+      transfersOutAgg,
     ] = await Promise.all([
       this.calculateHouseStockMap(branchId),
+      this.calculateBranchStocksBreakdown(),
       prisma.productionItem.groupBy({
         by: ['productId'],
         _sum: { quantityProduced: true },
@@ -177,6 +190,22 @@ export class ProductsService {
         where: branchId ? { branchId } : {},
         select: { description: true },
       }),
+      prisma.transferManifest.groupBy({
+        by: ['productId'],
+        _sum: { goodLoavesReceived: true, loavesCount: true },
+        where: {
+          status: 'RECEIVED',
+          ...(branchId ? { destBranchId: branchId } : {}),
+        },
+      }),
+      prisma.transferManifest.groupBy({
+        by: ['productId'],
+        _sum: { loavesCount: true },
+        where: {
+          status: { in: ['DISPATCHED', 'RECEIVED'] },
+          ...(branchId ? { originBranchId: branchId } : {}),
+        },
+      }),
     ]);
 
     const allProdsForName = await prisma.product.findMany({ select: { id: true, name: true } });
@@ -204,6 +233,18 @@ export class ProductsService {
     const convFromMap = new Map(conversionsFromAgg.map(a => [a.fromProductId, a._sum.fromQuantity || 0]));
     const salesMap = new Map(salesAgg.map(a => [a.productId, a._sum.quantity || 0]));
     const damagedMap = new Map(damagedAgg.map(a => [a.productId, a._sum.damagedQuantity || 0]));
+    const transferredInMap = new Map(
+      transfersInAgg.map((a) => [
+        a.productId,
+        a._sum.goodLoavesReceived ?? a._sum.loavesCount ?? 0,
+      ])
+    );
+    const transferredOutMap = new Map(
+      transfersOutAgg.map((a) => [
+        a.productId,
+        a._sum.loavesCount || 0,
+      ])
+    );
 
     const enrichedList = list.map((p) => {
       const batchProduced = producedMap.get(p.id) || 0;
@@ -211,16 +252,24 @@ export class ProductsService {
       const totalConvertedOut = convFromMap.get(p.id) || 0;
       // Converting into a product counts as producing it; converting from reduces its production count.
       const totalProduced = Math.max(0, batchProduced + totalConvertedIn - totalConvertedOut);
-      const totalDelivered = deliveredMap.get(p.id) || 0;
+      const supplierDelivered = deliveredMap.get(p.id) || 0;
+      const transferredIn = transferredInMap.get(p.id) || 0;
+      const transferredOut = transferredOutMap.get(p.id) || 0;
+      // If branchId is specified, net delivered to this branch = supplier delivered + transferred in - transferred out
+      const totalDelivered = branchId ? Math.max(0, supplierDelivered + transferredIn - transferredOut) : supplierDelivered;
       const totalSold = (salesMap.get(p.id) || 0) + (lifetimeCreditMap.get(p.id) || 0);
       const totalDamaged = damagedMap.get(p.id) || 0;
       const currentHouseStock = stockMap.get(p.id) ?? 0;
+      const branchStocks = branchBreakdownMap.get(p.id) || [];
 
       return {
         ...p,
         currentHouseStock,
+        branchStocks,
         totalProduced,
         totalDelivered,
+        totalTransferredIn: transferredIn,
+        totalTransferredOut: transferredOut,
         totalConvertedIn,
         totalConvertedOut,
         totalSold,
@@ -262,7 +311,18 @@ export class ProductsService {
       : await prisma.branch.findMany({ where: { isActive: true }, select: { id: true } });
 
     for (const b of branches) {
-      const [producedAgg, deliveredAgg, convToAgg, convFromAgg, salesAgg, damagedAgg, customerCredits] = await Promise.all([
+      const [
+        producedAgg,
+        deliveredAgg,
+        convToAgg,
+        convFromAgg,
+        salesAgg,
+        damagedAgg,
+        customerCredits,
+        transfersOutAgg,
+        transfersInAgg,
+        branchProductStocks,
+      ] = await Promise.all([
         prisma.productionItem.groupBy({
           by: ['productId'],
           _sum: { quantityProduced: true },
@@ -302,6 +362,26 @@ export class ProductsService {
           where: { branchId: b.id },
           select: { description: true },
         }),
+        prisma.transferManifest.groupBy({
+          by: ['productId'],
+          _sum: { loavesCount: true },
+          where: {
+            originBranchId: b.id,
+            status: { in: ['DISPATCHED', 'RECEIVED'] },
+          },
+        }),
+        prisma.transferManifest.groupBy({
+          by: ['productId'],
+          _sum: { goodLoavesReceived: true, loavesCount: true },
+          where: {
+            destBranchId: b.id,
+            status: 'RECEIVED',
+          },
+        }),
+        prisma.branchProductStock.findMany({
+          where: { branchId: b.id },
+          select: { productId: true, availableStock: true },
+        }),
       ]);
 
       const creditMap = new Map<string, number>();
@@ -318,6 +398,9 @@ export class ProductsService {
       const fromMap = new Map(convFromAgg.map((a) => [a.fromProductId, a._sum.fromQuantity || 0]));
       const sMap = new Map(salesAgg.map((a) => [a.productId, a._sum.quantity || 0]));
       const damMap = new Map(damagedAgg.map((a) => [a.productId, a._sum.damagedQuantity || 0]));
+      const outMap = new Map(transfersOutAgg.map((a) => [a.productId, a._sum.loavesCount || 0]));
+      const inMap = new Map(transfersInAgg.map((a) => [a.productId, a._sum.goodLoavesReceived ?? a._sum.loavesCount ?? 0]));
+      const bpsMap = new Map(branchProductStocks.map((bps) => [bps.productId, bps.availableStock]));
 
       for (const p of allProdsList) {
         const produced = pMap.get(p.id) || 0;
@@ -327,17 +410,63 @@ export class ProductsService {
         const credited = creditMap.get(p.id) || 0;
         const convOut = fromMap.get(p.id) || 0;
         const damaged = damMap.get(p.id) || 0;
+        const transferredOut = outMap.get(p.id) || 0;
+        const transferredIn = inMap.get(p.id) || 0;
 
-        const currentQty = Math.max(
+        const calculatedQty = Math.max(
           0,
-          (produced + delivered + convIn) - (sold + credited + convOut + damaged)
+          (produced + delivered + convIn + transferredIn) - (sold + credited + convOut + damaged + transferredOut)
         );
-        stockMap.set(p.id, (stockMap.get(p.id) || 0) + currentQty);
+
+        const bpsQty = bpsMap.get(p.id);
+        const finalQty = bpsQty !== undefined ? bpsQty : calculatedQty;
+        stockMap.set(p.id, (stockMap.get(p.id) || 0) + finalQty);
       }
     }
 
     ProductsService.stockMapCache.set(cacheKey, { timestamp: Date.now(), data: stockMap });
     return stockMap;
+  }
+
+  /**
+   * Calculates per-branch inventory breakdown for every product:
+   * Returns Map<productId, Array<{ branchId, branchName, isHub, stock }>>
+   */
+  public async calculateBranchStocksBreakdown(): Promise<Map<string, BranchStockItem[]>> {
+    const cacheKey = 'ALL_BRANCH_BREAKDOWN';
+    const cached = ProductsService.branchStocksCache.get(cacheKey);
+    const now = Date.now();
+    if (cached && (now - cached.timestamp) < ProductsService.CACHE_TTL_MS) {
+      return cached.data;
+    }
+
+    const breakdownMap = new Map<string, BranchStockItem[]>();
+    const allProdsList = await prisma.product.findMany({ select: { id: true } });
+    for (const p of allProdsList) {
+      breakdownMap.set(p.id, []);
+    }
+
+    const branches = await prisma.branch.findMany({
+      where: { isActive: true },
+      select: { id: true, name: true, isHub: true },
+      orderBy: [{ isHub: 'desc' }, { name: 'asc' }],
+    });
+
+    for (const b of branches) {
+      const stockMapForBranch = await this.calculateHouseStockMap(b.id);
+      for (const p of allProdsList) {
+        const stock = stockMapForBranch.get(p.id) || 0;
+        breakdownMap.get(p.id)?.push({
+          branchId: b.id,
+          branchName: b.name,
+          isHub: b.isHub,
+          stock,
+        });
+      }
+    }
+
+    ProductsService.branchStocksCache.set(cacheKey, { timestamp: Date.now(), data: breakdownMap });
+    return breakdownMap;
   }
 
   async getProductById(id: string, branchId?: string): ServiceResult {
@@ -356,8 +485,12 @@ export class ProductsService {
       return { error: 'Product not found', status: 404 };
     }
 
-    const stockMap = await this.calculateHouseStockMap(branchId);
+    const [stockMap, branchBreakdownMap] = await Promise.all([
+      this.calculateHouseStockMap(branchId),
+      this.calculateBranchStocksBreakdown(),
+    ]);
     const currentHouseStock = stockMap.get(id) ?? 0;
+    const branchStocks = branchBreakdownMap.get(id) || [];
 
     const [producedAgg, deliveredAgg] = await Promise.all([
       prisma.productionItem.aggregate({
@@ -428,6 +561,7 @@ export class ProductsService {
       data: {
         ...product,
         currentHouseStock,
+        branchStocks,
         totalProduced,
         totalDelivered,
         totalConvertedIn,

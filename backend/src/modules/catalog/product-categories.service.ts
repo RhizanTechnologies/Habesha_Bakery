@@ -73,18 +73,9 @@ export class ProductCategoriesService {
   }
 
   async createCategory(body: { name: string; nameLatin?: string; type: string; parentId?: string | null; productionRole?: any }): ServiceResult {
-    const { name, nameLatin, type, parentId, productionRole } = body;
+    let { name, nameLatin, type, parentId, productionRole } = body;
     if (!name?.trim() || !type) {
       return { error: 'name and type (PRODUCED|RESELL) required', status: 400 };
-    }
-
-    if (type === 'PRODUCED') {
-      if (!productionRole || !['BAKER', 'CAKE_WORKER', 'SAMBUSA_WORKER'].includes(productionRole)) {
-        return {
-          error: 'productionRole is required for PRODUCED categories (must be BAKER, CAKE_WORKER, or SAMBUSA_WORKER)',
-          status: 400,
-        };
-      }
     }
 
     const trimmedName = name.trim();
@@ -101,6 +92,20 @@ export class ProductCategoriesService {
     }
     if (parent && parent.type !== type) {
       return { error: 'parent category must have the same type', status: 400 };
+    }
+
+    // Auto-inherit productionRole from parent if not explicitly provided
+    if (parent && !productionRole && parent.productionRole) {
+      productionRole = parent.productionRole;
+    }
+
+    if (type === 'PRODUCED') {
+      if (!productionRole || !['BAKER', 'CAKE_WORKER', 'SAMBUSA_WORKER'].includes(productionRole)) {
+        return {
+          error: 'productionRole is required for PRODUCED categories (must be BAKER, CAKE_WORKER, or SAMBUSA_WORKER)',
+          status: 400,
+        };
+      }
     }
 
     try {
@@ -133,7 +138,7 @@ export class ProductCategoriesService {
       return { error: 'Category not found', status: 404 };
     }
 
-    const { name, nameLatin, type, parentId, productionRole } = body;
+    let { name, nameLatin, type, parentId, productionRole } = body;
     const trimmedName = name !== undefined ? name.trim() : undefined;
 
     if (trimmedName && trimmedName.toLowerCase() !== existing.name.toLowerCase()) {
@@ -151,22 +156,27 @@ export class ProductCategoriesService {
     const resolvedType = type !== undefined ? type : existing.type;
     const resolvedParentId = parentId !== undefined ? parentId : existing.parentId;
 
-    if (resolvedType === 'PRODUCED') {
-      const roleToUse = productionRole !== undefined ? productionRole : existing.productionRole;
-      if (!roleToUse || !['BAKER', 'CAKE_WORKER', 'SAMBUSA_WORKER'].includes(roleToUse)) {
-        return {
-          error: 'productionRole is required for PRODUCED categories (must be BAKER, CAKE_WORKER, or SAMBUSA_WORKER)',
-          status: 400,
-        };
-      }
-    }
-
     const parent = await this.resolveParentCategory(resolvedParentId, id);
     if (typeof parent === 'string') {
       return { error: parent, status: 400 };
     }
     if (parent && parent.type !== resolvedType) {
       return { error: 'parent category must have the same type', status: 400 };
+    }
+
+    let roleToUse = productionRole !== undefined ? productionRole : existing.productionRole;
+    if (parent && !roleToUse && parent.productionRole) {
+      roleToUse = parent.productionRole;
+      productionRole = parent.productionRole;
+    }
+
+    if (resolvedType === 'PRODUCED') {
+      if (!roleToUse || !['BAKER', 'CAKE_WORKER', 'SAMBUSA_WORKER'].includes(roleToUse)) {
+        return {
+          error: 'productionRole is required for PRODUCED categories (must be BAKER, CAKE_WORKER, or SAMBUSA_WORKER)',
+          status: 400,
+        };
+      }
     }
 
     try {
@@ -220,7 +230,7 @@ export class ProductCategoriesService {
 
     const parent = await prisma.productCategory.findUnique({
       where: { id: parentId },
-      select: { id: true, type: true, parentId: true },
+      select: { id: true, type: true, parentId: true, productionRole: true },
     });
 
     if (!parent) return 'parentId: category not found';
