@@ -122,7 +122,7 @@ export async function seed8Days() {
 
   const staffList = [
     // Owner (Global)
-    { phone: '0912345678', fullName: 'Hamza Owner', role: Role.OWNER, salary: 45000, shift: null, branchId: branchMegenagna.id, key: 'OWNER' },
+    { phone: '0912345678', fullName: 'Muhammed', role: Role.OWNER, salary: 45000, shift: null, branchId: branchMegenagna.id, key: 'OWNER' },
 
     // Megenagna Staff
     { phone: '0910000001', fullName: 'Abebe Admin', role: Role.ADMIN, salary: 25000, shift: null, branchId: branchMegenagna.id, key: 'ADMIN_MEG' },
