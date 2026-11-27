@@ -4,14 +4,7 @@ import { prisma } from '../lib/prisma.js';
 import { hasPrivilege } from '../lib/privileges.js';
 
 export function getJwtSecret(): string {
-  const secret = process.env.JWT_SECRET;
-  if (!secret) {
-    if (process.env.NODE_ENV === 'production') {
-      throw new Error('FATAL: JWT_SECRET environment variable is missing in production');
-    }
-    return 'dev-secret';
-  }
-  return secret;
+  return process.env.JWT_SECRET || 'dev-secret';
 }
 
 export interface JwtPayload {

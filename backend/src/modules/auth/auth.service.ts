@@ -4,8 +4,7 @@ import { prisma } from '../../lib/prisma.js';
 import { toAuthUserDto } from '../../lib/authUser.js';
 import type { ServiceResponse, ServiceResult } from '../../types/service-response.js';
 import { notificationsService } from '../notifications/notifications.service.js';
-
-const JWT_SECRET = process.env.JWT_SECRET ?? 'dev-secret';
+import { getJwtSecret } from '../../middleware/auth.js';
 
 export class AuthService {
   async changePassword(userId: string, body: { currentPassword?: string; newPassword?: string }): ServiceResult {
@@ -140,7 +139,7 @@ export class AuthService {
 
     const token = jwt.sign(
       { userId: user.id, role: user.role },
-      JWT_SECRET,
+      getJwtSecret(),
       { expiresIn: '7d' }
     );
 
