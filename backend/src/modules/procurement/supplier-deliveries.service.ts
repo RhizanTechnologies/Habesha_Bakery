@@ -239,6 +239,25 @@ export class SupplierDeliveriesService {
             });
           }
 
+          if (targetBranchId && netQty > 0) {
+            await tx.branchProductStock.upsert({
+              where: {
+                branchId_productId: {
+                  branchId: targetBranchId,
+                  productId: productId as string,
+                },
+              },
+              create: {
+                branchId: targetBranchId,
+                productId: productId as string,
+                availableStock: netQty,
+              },
+              update: {
+                availableStock: { increment: netQty },
+              },
+            });
+          }
+
           results.push(del);
         }
         return results;
@@ -264,7 +283,8 @@ export class SupplierDeliveriesService {
               totalAmount: totalUnpaid,
               count: unpaidList.length,
             },
-            '/suppliers'
+            '/suppliers',
+            userId
           ).catch((err) => console.error('[Notification] unpaid delivery error:', err));
         }
       } catch (err) {
@@ -349,7 +369,8 @@ export class SupplierDeliveriesService {
           productName: delivery.product?.name || 'Product',
           totalAmount: Math.max(0, itemCost - itemPaid),
         },
-        '/suppliers'
+        '/suppliers',
+        userId
       ).catch((err) => console.error('[Notification] unpaid delivery error:', err));
     }
 

@@ -1054,25 +1054,29 @@ export default function SupplierDetailPage({ params }: { params: Promise<{ id: s
 
               <div className={isOwner ? "grid grid-cols-2 gap-3" : ""}>
                 <div>
-                  <label className="text-xs font-bold text-[#4A2E1B] mb-1 block">{t('suppliers.colUnitCost')}</label>
+                  <label className="text-xs font-bold text-[#4A2E1B] mb-1 block">
+                    {t('suppliers.buyingPrice') || 'Buying Price (Unit Cost)'}
+                  </label>
                   <Input
                     name="unitBuyPrice"
                     type="number"
                     step="0.01"
                     required
                     defaultValue={Number(editingDelivery.unitBuyPrice)}
-                    className="bg-[#FAF6F0] border-[#EDE4D5] h-10 text-xs font-mono"
+                    className="bg-[#FAF6F0] border-[#EDE4D5] h-10 text-xs font-mono font-bold text-[#2C1B10]"
                   />
                 </div>
                 {isOwner && (
                   <div>
-                    <label className="text-xs font-bold text-[#4A2E1B] mb-1 block">{t('stock.unitPriceLabel')}</label>
+                    <label className="text-xs font-bold text-[#4A2E1B] mb-1 block">
+                      {t('suppliers.sellingPrice') || 'Selling Price (Retail)'}
+                    </label>
                     <Input
                       name="unitSellPrice"
                       type="number"
                       step="0.01"
                       defaultValue={Number(editingDelivery.unitSellPrice || 0)}
-                      className="bg-[#FAF6F0] border-[#EDE4D5] h-10 text-xs font-mono text-[#E87A18]"
+                      className="bg-[#FAF6F0] border-[#EDE4D5] h-10 text-xs font-mono text-[#E87A18] font-bold"
                     />
                   </div>
                 )}

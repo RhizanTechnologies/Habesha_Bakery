@@ -274,18 +274,18 @@ export default function AttendanceManagementPage() {
 
   return (
     <DashboardLayout>
-      <div className="space-y-6 max-w-7xl mx-auto pb-12">
+      <div className="space-y-4 xs:space-y-6 max-w-7xl mx-auto pb-12">
         {/* Top Banner & Quick Actions */}
-        <div className="bg-gradient-to-r from-[#4A2E1B] via-[#5A3A23] to-[#2C1B10] rounded-3xl p-6 sm:p-8 text-white shadow-lg flex flex-col md:flex-row md:items-center justify-between gap-6 border border-[#5A3A23]/80">
+        <div className="bg-gradient-to-r from-[#4A2E1B] via-[#5A3A23] to-[#2C1B10] rounded-2xl sm:rounded-3xl p-4 xs:p-6 sm:p-8 text-white shadow-lg flex flex-col md:flex-row md:items-center justify-between gap-4 xs:gap-6 border border-[#5A3A23]/80">
           <div>
-            <div className="flex items-center gap-2 text-xs font-black text-[#E87A18] uppercase tracking-wider">
-              <Clock className="w-4 h-4" />
+            <div className="flex items-center gap-2 text-[10px] xs:text-xs font-black text-[#E87A18] uppercase tracking-wider">
+              <Clock className="w-3.5 h-3.5 xs:w-4 xs:h-4" />
               <span>{l("የሠራተኞች መገኘትና የፊት ስካን ቁጥጥር", "To'annoo Argama Hojjattootaa", "Staff Attendance & Face Verification")}</span>
             </div>
-            <h1 className="text-2xl sm:text-3xl font-black tracking-tight mt-1 font-heading text-white">
+            <h1 className="text-xl xs:text-2xl sm:text-3xl font-black tracking-tight mt-1 font-heading text-white">
               {l("የመገኘት መዝገብ እና የፎቶ ማረጋገጫ", "Galmee Argamaa fi Suuraa", "Attendance Roster & Photo Audit")}
             </h1>
-            <p className="text-xs sm:text-sm text-[#E2C7B4] mt-1.5 max-w-2xl leading-relaxed">
+            <p className="text-[11px] xs:text-xs sm:text-sm text-[#E2C7B4] mt-1 max-w-2xl leading-relaxed">
               {l(
                 "የሠራተኞች የቀጥታ የፊት ስካን መገኘት፣ የፎቶ ማረጋገጫ እና የመዘግየት ቅጣት ማፅደቂያ",
                 "Galmee argama hojjattootaa suuraan, to'annoo fuulaa fi mirkaneessa adabbii",
@@ -294,16 +294,16 @@ export default function AttendanceManagementPage() {
             </p>
           </div>
 
-          <div className="flex flex-wrap items-center gap-2.5 w-full md:w-auto">
+          <div className="grid grid-cols-1 xs:grid-cols-2 sm:flex sm:items-center gap-2 w-full md:w-auto">
             {/* Launch Face Attendance Screen */}
             <Link
               href="/attendance/kiosk"
               target="_blank"
-              className="flex-1 sm:flex-initial px-4 py-2.5 rounded-xl bg-[#E87A18] hover:bg-[#D96B10] text-white font-extrabold text-xs flex items-center justify-center gap-2 shadow-md shadow-[#E87A18]/30 transition-transform active:scale-95"
+              className="w-full sm:w-auto px-3.5 py-2.5 rounded-xl bg-[#E87A18] hover:bg-[#D96B10] text-white font-extrabold text-xs flex items-center justify-center gap-1.5 shadow-md shadow-[#E87A18]/30 transition-transform active:scale-95 text-center"
             >
               <Camera className="w-4 h-4 shrink-0" />
-              <span>{l("የፊት ስካን መመዝገቢያ ክፈት", "Galmee Suuraa Bani", "Open Face Attendance")}</span>
-              <ExternalLink className="w-3.5 h-3.5 shrink-0 opacity-80" />
+              <span className="truncate">{l("የፊት ስካን ክፈት", "Galmee Bani", "Open Face Attendance")}</span>
+              <ExternalLink className="w-3 h-3 shrink-0 opacity-80" />
             </Link>
 
             {/* Owner Penalty Tier Rules */}
@@ -314,72 +314,72 @@ export default function AttendanceManagementPage() {
                   loadPenaltyConfig();
                   setShowConfigModal(true);
                 }}
-                className="flex-1 sm:flex-initial px-4 py-2.5 rounded-xl bg-[#FAF7EE] hover:bg-[#FAF6F0] border border-[#EDE4D5] text-[#4A2E1B] font-extrabold text-xs flex items-center justify-center gap-2 transition-colors cursor-pointer shadow-xs"
+                className="w-full sm:w-auto px-3.5 py-2.5 rounded-xl bg-[#FAF7EE] hover:bg-[#FAF6F0] border border-[#EDE4D5] text-[#4A2E1B] font-extrabold text-xs flex items-center justify-center gap-1.5 transition-colors cursor-pointer shadow-xs text-center"
               >
                 <Settings className="w-4 h-4 text-[#E87A18] shrink-0" />
-                <span>{l("የመዘግየት ቅጣት ደንብ", "Qajeelfama Adabbii Turaatii", "Late Penalty Rules")}</span>
+                <span className="truncate">{l("የመዘግየት ቅጣት ደንብ", "Qajeelfama Adabbii", "Late Penalty Rules")}</span>
               </button>
             )}
           </div>
         </div>
 
-        {/* KPI Cards */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-          <div className="bg-white rounded-2xl p-5 border border-[#EDE4D5] shadow-xs">
-            <div className="flex items-center justify-between text-[#8C7361] text-xs font-extrabold">
-              <span>{l("የዕለቱ አጠቃላይ መግቢያ", "Waliigala Guyyaa", "Total Punches")}</span>
-              <Clock className="w-4 h-4 text-[#E87A18]" />
+        {/* KPI Cards: 2-column on mobile (<lg) for compact vertical height */}
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-2.5 sm:gap-4">
+          <div className="bg-white rounded-xl xs:rounded-2xl p-3 xs:p-3.5 sm:p-5 border border-[#EDE4D5] shadow-xs">
+            <div className="flex items-center justify-between text-[#8C7361] text-[11px] sm:text-xs font-extrabold gap-1">
+              <span className="truncate">{l("የዕለቱ አጠቃላይ", "Waliigala", "Total Punches")}</span>
+              <Clock className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-[#E87A18] shrink-0" />
             </div>
-            <div className="text-2xl font-black text-[#2C1B10] mt-2 font-heading">{summary.totalPunches}</div>
-            <p className="text-[11px] text-[#8C7361] mt-0.5">{filterDate} records</p>
+            <div className="text-xl sm:text-2xl font-black text-[#2C1B10] mt-1.5 font-heading">{summary.totalPunches}</div>
+            <p className="text-[10px] sm:text-[11px] text-[#8C7361] mt-0.5 truncate">{filterDate}</p>
           </div>
 
-          <div className="bg-white rounded-2xl p-5 border border-emerald-200 shadow-xs">
-            <div className="flex items-center justify-between text-emerald-700 text-xs font-extrabold">
-              <span>{l("በሰዓቱ የገቡ", "Yeroon Kan Seenan", "On-Time Punches")}</span>
-              <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+          <div className="bg-white rounded-xl xs:rounded-2xl p-3 xs:p-3.5 sm:p-5 border border-emerald-200 shadow-xs">
+            <div className="flex items-center justify-between text-emerald-700 text-[11px] sm:text-xs font-extrabold gap-1">
+              <span className="truncate">{l("በሰዓቱ የገቡ", "Yeroon", "On-Time Punches")}</span>
+              <CheckCircle2 className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-emerald-600 shrink-0" />
             </div>
-            <div className="text-2xl font-black text-emerald-800 mt-2 font-heading">{summary.onTimePunches}</div>
-            <p className="text-[11px] text-emerald-600 mt-0.5">
+            <div className="text-xl sm:text-2xl font-black text-emerald-800 mt-1.5 font-heading">{summary.onTimePunches}</div>
+            <p className="text-[10px] sm:text-[11px] text-emerald-600 mt-0.5 truncate">
               {summary.totalPunches > 0
-                ? `${Math.round((summary.onTimePunches / summary.totalPunches) * 100)}% on time compliance`
+                ? `${Math.round((summary.onTimePunches / summary.totalPunches) * 100)}% on time`
                 : "No punches"}
             </p>
           </div>
 
-          <div className="bg-white rounded-2xl p-5 border border-amber-200 shadow-xs">
-            <div className="flex items-center justify-between text-amber-800 text-xs font-extrabold">
-              <span>{l("የዘገዩ (Tardy)", "Kan Turan", "Tardy Punches")}</span>
-              <AlertTriangle className="w-4 h-4 text-amber-600" />
+          <div className="bg-white rounded-xl xs:rounded-2xl p-3 xs:p-3.5 sm:p-5 border border-amber-200 shadow-xs">
+            <div className="flex items-center justify-between text-amber-800 text-[11px] sm:text-xs font-extrabold gap-1">
+              <span className="truncate">{l("የዘገዩ (Tardy)", "Kan Turan", "Tardy Punches")}</span>
+              <AlertTriangle className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-amber-600 shrink-0" />
             </div>
-            <div className="text-2xl font-black text-amber-900 mt-2 font-heading">{summary.latePunches}</div>
-            <p className="text-[11px] text-amber-700 mt-0.5">&gt; 30 mins late from scheduled shift</p>
+            <div className="text-xl sm:text-2xl font-black text-amber-900 mt-1.5 font-heading">{summary.latePunches}</div>
+            <p className="text-[10px] sm:text-[11px] text-amber-700 mt-0.5 truncate">&gt; 30m late</p>
           </div>
 
-          <div className="bg-white rounded-2xl p-5 border border-[#EDE4D5] shadow-xs">
-            <div className="flex items-center justify-between text-[#8C7361] text-xs font-extrabold">
-              <span>{l("ፈረቃ ሁኔታ", "Haala Hojii", "Active Shifts")}</span>
-              <Building2 className="w-4 h-4 text-[#4A2E1B]" />
+          <div className="bg-white rounded-xl xs:rounded-2xl p-3 xs:p-3.5 sm:p-5 border border-[#EDE4D5] shadow-xs">
+            <div className="flex items-center justify-between text-[#8C7361] text-[11px] sm:text-xs font-extrabold gap-1">
+              <span className="truncate">{l("ፈረቃ ሁኔታ", "Haala Hojii", "Active Shifts")}</span>
+              <Building2 className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-[#4A2E1B] shrink-0" />
             </div>
-            <div className="text-xs font-bold text-[#4A2E1B] mt-3 space-y-1.5">
-              <div className="flex items-center justify-between">
-                <span className="flex items-center gap-1.5 text-amber-700">
-                  <Sun className="w-3.5 h-3.5" /> Day Shift:
+            <div className="text-[11px] sm:text-xs font-bold text-[#4A2E1B] mt-2 space-y-1">
+              <div className="flex items-center justify-between gap-1">
+                <span className="flex items-center gap-1 text-amber-700 text-[10px] sm:text-[11px] truncate">
+                  <Sun className="w-3 h-3 shrink-0" /> Day:
                 </span>
-                <span className="font-mono text-[#2C1B10]">06:00 - 18:00</span>
+                <span className="font-mono text-[#2C1B10] text-[10px] sm:text-[11px]">06-18h</span>
               </div>
-              <div className="flex items-center justify-between">
-                <span className="flex items-center gap-1.5 text-indigo-700">
-                  <Moon className="w-3.5 h-3.5" /> Night Shift:
+              <div className="flex items-center justify-between gap-1">
+                <span className="flex items-center gap-1 text-indigo-700 text-[10px] sm:text-[11px] truncate">
+                  <Moon className="w-3 h-3 shrink-0" /> Night:
                 </span>
-                <span className="font-mono text-[#2C1B10]">21:00 - 06:00</span>
+                <span className="font-mono text-[#2C1B10] text-[10px] sm:text-[11px]">21-06h</span>
               </div>
             </div>
           </div>
         </div>
 
         {/* Filter & Search Bar */}
-        <div className="bg-white rounded-2xl p-4 border border-[#EDE4D5] shadow-xs flex flex-col md:flex-row items-stretch md:items-center justify-between gap-3">
+        <div className="bg-white rounded-xl xs:rounded-2xl p-3 xs:p-4 border border-[#EDE4D5] shadow-xs flex flex-col md:flex-row items-stretch md:items-center justify-between gap-2.5 xs:gap-3">
           <div className="flex flex-wrap items-center gap-2.5">
             <div className="flex items-center gap-1.5 text-xs font-extrabold text-[#4A2E1B] shrink-0">
               <Filter className="w-4 h-4 text-[#E87A18]" />
