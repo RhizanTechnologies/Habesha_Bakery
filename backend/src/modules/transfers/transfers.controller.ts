@@ -1,37 +1,72 @@
 import { Router, Response } from 'express';
 import { prisma } from '../../lib/prisma.js';
-import { authMiddleware, requireRole, type AuthRequest } from '../../middleware/auth.js';
+import { authMiddleware, requireRole, requirePrivilege, type AuthRequest } from '../../middleware/auth.js';
 import { z } from 'zod';
+import { ProductsService } from '../catalog/products.service.js';
+import { parsePagination } from '../../lib/pagination.js';
 
 export const transfersRouter = Router();
 transfersRouter.use(authMiddleware);
 
 // GET /api/transfers - List transfer manifests & transit metrics
-transfersRouter.get('/', requireRole('OWNER', 'ADMIN', 'BRANCH_MANAGER', 'DRIVER', 'CASHIER', 'STOREKEEPER'), async (req: AuthRequest, res: Response) => {
+transfersRouter.get('/', requirePrivilege('access_transfers', 'OWNER', 'ADMIN', 'BRANCH_MANAGER', 'DRIVER', 'CASHIER'), async (req: AuthRequest, res: Response) => {
   try {
-    const { branchId, status } = req.query;
+    const { branchId, status, search } = req.query;
+    const pagination = parsePagination(req.query as Record<string, unknown>, 15, 100);
 
     const where: any = {};
     if (status && typeof status === 'string' && status !== 'ALL') {
       where.status = status;
     }
 
-    // If user is non-owner/admin, restrict to their branch
+    // Branch filter condition
+    let branchCondition: any = null;
     if (req.user?.branchId && req.user.role !== 'OWNER' && req.user.role !== 'ADMIN') {
-      where.OR = [
-        { originBranchId: req.user.branchId },
-        { destBranchId: req.user.branchId },
-      ];
+      branchCondition = {
+        OR: [
+          { originBranchId: req.user.branchId },
+          { destBranchId: req.user.branchId },
+        ],
+      };
     } else if (branchId && typeof branchId === 'string' && branchId !== 'ALL') {
-      where.OR = [
-        { originBranchId: branchId },
-        { destBranchId: branchId },
-      ];
+      branchCondition = {
+        OR: [
+          { originBranchId: branchId },
+          { destBranchId: branchId },
+        ],
+      };
     }
+
+    // Search filter condition (manifest #, driver name, product name)
+    let searchCondition: any = null;
+    if (search && typeof search === 'string' && search.trim()) {
+      const term = search.trim();
+      searchCondition = {
+        OR: [
+          { manifestNumber: { contains: term, mode: 'insensitive' } },
+          { driverName: { contains: term, mode: 'insensitive' } },
+          { product: { name: { contains: term, mode: 'insensitive' } } },
+        ],
+      };
+    }
+
+    // Combine filters safely
+    const andClauses: any[] = [];
+    if (branchCondition) andClauses.push(branchCondition);
+    if (searchCondition) andClauses.push(searchCondition);
+
+    if (andClauses.length === 1) {
+      Object.assign(where, andClauses[0]);
+    } else if (andClauses.length > 1) {
+      where.AND = andClauses;
+    }
+
+    const totalCount = await prisma.transferManifest.count({ where });
 
     const manifests = await prisma.transferManifest.findMany({
       where,
-      take: 100,
+      skip: pagination.skip,
+      take: pagination.take,
       orderBy: { createdAt: 'desc' },
       include: {
         originBranch: { select: { id: true, name: true, code: true } },
@@ -42,12 +77,17 @@ transfersRouter.get('/', requireRole('OWNER', 'ADMIN', 'BRANCH_MANAGER', 'DRIVER
       },
     });
 
-    // KPI Metrics calculation for today
+    // KPI Metrics calculation for today (filtered by branch if specified)
     const today = new Date();
     today.setHours(0, 0, 0, 0);
 
+    const todayWhere: any = { createdAt: { gte: today } };
+    if (branchCondition) {
+      Object.assign(todayWhere, branchCondition);
+    }
+
     const allTodayManifests = await prisma.transferManifest.findMany({
-      where: { createdAt: { gte: today } },
+      where: todayWhere,
     });
 
     const cratesDispatchedToday = allTodayManifests.reduce((acc, curr) => acc + curr.cratesCount, 0);
@@ -58,6 +98,8 @@ transfersRouter.get('/', requireRole('OWNER', 'ADMIN', 'BRANCH_MANAGER', 'DRIVER
       .filter((m) => m.status === 'DISPATCHED')
       .reduce((acc, curr) => acc + curr.cratesCount, 0);
     const loavesDistributedToday = allTodayManifests.reduce((acc, curr) => acc + curr.loavesCount, 0);
+
+    const totalPages = Math.max(1, Math.ceil(totalCount / pagination.limit));
 
     res.json({
       transfers: manifests.map((m) => ({
@@ -91,7 +133,15 @@ transfersRouter.get('/', requireRole('OWNER', 'ADMIN', 'BRANCH_MANAGER', 'DRIVER
         cratesReceivedToday,
         cratesInTransitToday,
         loavesDistributedToday,
-        totalManifestsCount: manifests.length,
+        totalManifestsCount: totalCount,
+      },
+      pagination: {
+        total: totalCount,
+        page: pagination.page,
+        limit: pagination.limit,
+        totalPages,
+        hasNextPage: pagination.page < totalPages,
+        hasPrevPage: pagination.page > 1,
       },
     });
   } catch (err: any) {
@@ -109,6 +159,9 @@ transfersRouter.get('/products', async (req: AuthRequest, res: Response) => {
       hubId = hub?.id;
     }
 
+    const productsService = new ProductsService();
+    const stockMap = hubId ? await productsService.calculateHouseStockMap(hubId) : new Map<string, number>();
+
     const products = await prisma.product.findMany({
       where: { isActive: true },
       select: {
@@ -121,7 +174,9 @@ transfersRouter.get('/products', async (req: AuthRequest, res: Response) => {
     });
 
     const mapped = products.map((p) => {
-      const stock = p.productStocks?.[0]?.availableStock ?? 0;
+      const dbStock = p.productStocks?.[0]?.availableStock ?? 0;
+      const houseStock = stockMap.get(p.id) ?? 0;
+      const stock = Math.max(dbStock, houseStock);
       return {
         id: p.id,
         name: p.name,
@@ -137,7 +192,7 @@ transfersRouter.get('/products', async (req: AuthRequest, res: Response) => {
 });
 
 // POST /api/transfers/dispatch - Dispatch crate transfers from Hub to Spoke
-transfersRouter.post('/dispatch', requireRole('OWNER', 'ADMIN', 'BRANCH_MANAGER', 'DRIVER', 'STOREKEEPER'), async (req: AuthRequest, res: Response) => {
+transfersRouter.post('/dispatch', requirePrivilege('access_transfers', 'OWNER', 'ADMIN', 'BRANCH_MANAGER', 'DRIVER', 'CASHIER'), async (req: AuthRequest, res: Response) => {
   try {
     const itemSchema = z.object({
       productId: z.string({ required_error: 'Product is required' }),
@@ -155,6 +210,7 @@ transfersRouter.post('/dispatch', requireRole('OWNER', 'ADMIN', 'BRANCH_MANAGER'
       driverName: z.string().optional().default('Direct Transfer'),
       driverPhone: z.string().optional(),
       vehiclePlate: z.string().optional(),
+      autoReceive: z.boolean().optional(),
     });
 
     const parsed = schema.safeParse(req.body);
@@ -162,7 +218,11 @@ transfersRouter.post('/dispatch', requireRole('OWNER', 'ADMIN', 'BRANCH_MANAGER'
       return res.status(400).json({ error: parsed.error.errors[0]?.message });
     }
 
-    const { destBranchId, driverName, driverPhone, vehiclePlate } = parsed.data;
+    const { destBranchId, driverName, driverPhone, vehiclePlate, autoReceive } = parsed.data;
+    const isAutoReceive = autoReceive ?? (
+      (driverName === 'Direct Transfer' || !driverName) &&
+      ['OWNER', 'ADMIN', 'BRANCH_MANAGER'].includes(req.user?.role || '')
+    );
 
     // Resolve Origin Branch (defaults to Hub)
     let originBranchId = parsed.data.originBranchId || req.user?.branchId;
@@ -218,7 +278,12 @@ transfersRouter.post('/dispatch', requireRole('OWNER', 'ADMIN', 'BRANCH_MANAGER'
         },
       });
 
-      const available = originStock?.availableStock ?? 0;
+      const productsService = new ProductsService();
+      const houseStockMap = await productsService.calculateHouseStockMap(originBranchId);
+      const houseAvailable = houseStockMap.get(item.productId) ?? 0;
+      const dbAvailable = originStock?.availableStock ?? 0;
+      const available = Math.max(dbAvailable, houseAvailable);
+
       if (available <= 0) {
         return res.status(400).json({
           error: `Product "${product.name}" is currently OUT OF STOCK at origin branch (0 available). Transfer not allowed.`,
@@ -249,15 +314,30 @@ transfersRouter.post('/dispatch', requireRole('OWNER', 'ADMIN', 'BRANCH_MANAGER'
         const manifestNumber = `TRF-${dateStr}-${String(countToday + index).padStart(3, '0')}`;
         index++;
 
-        // Deduct from Origin stock
-        await tx.branchProductStock.update({
+        const currentOriginStock = await tx.branchProductStock.findUnique({
           where: {
             branchId_productId: {
               branchId: originBranchId!,
               productId: item.productId,
             },
           },
-          data: {
+        });
+        const currentAvail = currentOriginStock?.availableStock ?? 0;
+
+        // Deduct from Origin stock
+        await tx.branchProductStock.upsert({
+          where: {
+            branchId_productId: {
+              branchId: originBranchId!,
+              productId: item.productId,
+            },
+          },
+          create: {
+            branchId: originBranchId!,
+            productId: item.productId,
+            availableStock: Math.max(0, currentAvail - item.unitsCount),
+          },
+          update: {
             availableStock: { decrement: item.unitsCount },
           },
         });
@@ -274,8 +354,13 @@ transfersRouter.post('/dispatch', requireRole('OWNER', 'ADMIN', 'BRANCH_MANAGER'
             driverName: driverName || 'Direct Transfer',
             driverPhone: driverPhone || null,
             vehiclePlate: vehiclePlate || null,
-            status: 'DISPATCHED',
+            status: isAutoReceive ? 'RECEIVED' : 'DISPATCHED',
             dispatchedByUserId: req.user?.id,
+            ...(isAutoReceive ? {
+              receivedTime: new Date(),
+              receivedByUserId: req.user?.id,
+              goodLoavesReceived: item.unitsCount,
+            } : {}),
           },
           include: {
             originBranch: { select: { id: true, name: true, code: true } },
@@ -284,11 +369,33 @@ transfersRouter.post('/dispatch', requireRole('OWNER', 'ADMIN', 'BRANCH_MANAGER'
           },
         });
 
+        if (isAutoReceive) {
+          // Immediately credit destination branch inventory
+          await tx.branchProductStock.upsert({
+            where: {
+              branchId_productId: {
+                branchId: destBranchId,
+                productId: item.productId,
+              },
+            },
+            update: {
+              availableStock: { increment: item.unitsCount },
+            },
+            create: {
+              branchId: destBranchId,
+              productId: item.productId,
+              availableStock: item.unitsCount,
+            },
+          });
+        }
+
         manifests.push(manifest);
       }
 
       return manifests;
     }, { maxWait: 15000, timeout: 45000 });
+
+    ProductsService.clearCache();
 
     return res.status(201).json({
       success: true,
@@ -302,7 +409,7 @@ transfersRouter.post('/dispatch', requireRole('OWNER', 'ADMIN', 'BRANCH_MANAGER'
 });
 
 // POST /api/transfers/:id/receive - Destination Spoke confirms delivery
-transfersRouter.post('/:id/receive', requireRole('OWNER', 'ADMIN', 'BRANCH_MANAGER', 'CASHIER'), async (req: AuthRequest, res: Response) => {
+transfersRouter.post('/:id/receive', requirePrivilege('access_transfers', 'OWNER', 'ADMIN', 'BRANCH_MANAGER', 'DRIVER', 'CASHIER'), async (req: AuthRequest, res: Response) => {
   try {
     const { id } = req.params;
 
@@ -366,6 +473,8 @@ transfersRouter.post('/:id/receive', requireRole('OWNER', 'ADMIN', 'BRANCH_MANAG
 
       return result;
     }, { maxWait: 15000, timeout: 30000 });
+
+    ProductsService.clearCache();
 
     res.json(updated);
   } catch (err: any) {

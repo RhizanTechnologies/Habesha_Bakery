@@ -23,7 +23,11 @@ import {
   Loader2,
   CheckCircle2,
   AlertCircle,
+  Building2,
+  Search,
+  Filter,
 } from 'lucide-react';
+import { PaginationControls } from '../../components/ui/PaginationControls';
 
 interface TransferItem {
   id: string;
@@ -74,13 +78,32 @@ interface BranchOption {
   isHub: boolean;
 }
 
+interface PaginationData {
+  total: number;
+  page: number;
+  limit: number;
+  totalPages: number;
+  hasNextPage: boolean;
+  hasPrevPage: boolean;
+}
+
 export default function TransfersPage() {
   const { language, l } = useLanguage();
-  const { selectedBranchId, selectedBranch } = useBranch();
+  const { selectedBranchId, selectedBranch, setSelectedBranchId } = useBranch();
   const { confirm, ConfirmModalComponent } = useConfirm();
 
-  const transfersEndpoint = selectedBranchId ? `/transfers?branchId=${selectedBranchId}` : '/transfers?branchId=ALL';
-  const cachedTransfers = getCachedApiData<{ transfers: TransferItem[]; metrics: TransferMetrics }>(transfersEndpoint);
+  const [filterBranchId, setFilterBranchId] = useState<string>(() => selectedBranchId || 'ALL');
+  const [filterStatus, setFilterStatus] = useState<'ALL' | 'DISPATCHED' | 'RECEIVED'>('ALL');
+  const [searchTerm, setSearchTerm] = useState('');
+  const [debouncedSearch, setDebouncedSearch] = useState('');
+
+  const [currentPage, setCurrentPage] = useState(1);
+  const [pageSize, setPageSize] = useState(15);
+  const [totalPages, setTotalPages] = useState(1);
+  const [totalCount, setTotalCount] = useState(0);
+
+  const transfersEndpoint = `/transfers?branchId=${filterBranchId}&status=${filterStatus}&page=${currentPage}&limit=${pageSize}${debouncedSearch ? `&search=${encodeURIComponent(debouncedSearch)}` : ''}`;
+  const cachedTransfers = getCachedApiData<{ transfers: TransferItem[]; metrics: TransferMetrics; pagination?: PaginationData }>(transfersEndpoint);
   const cachedBranches = getCachedApiData<BranchOption[]>('/branches');
   const cachedProducts = getCachedApiData<ProductOption[]>('/products');
 
@@ -91,7 +114,10 @@ export default function TransfersPage() {
   });
   const [products, setProducts] = useState<ProductOption[]>(() => {
     if (!cachedProducts) return [];
-    return Array.isArray(cachedProducts) ? cachedProducts : [];
+    return (Array.isArray(cachedProducts) ? cachedProducts : []).map((p: any) => ({
+      ...p,
+      availableStock: Number(p.availableStock ?? p.currentHouseStock ?? 0),
+    }));
   });
   const [metrics, setMetrics] = useState<TransferMetrics>(() => cachedTransfers?.metrics || {
     cratesDispatchedToday: 0,
@@ -103,6 +129,29 @@ export default function TransfersPage() {
   const [loading, setLoading] = useState(!cachedTransfers);
   const [error, setError] = useState<string | null>(null);
 
+  // Debounce search input changes
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setDebouncedSearch(searchTerm);
+      setCurrentPage(1);
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [searchTerm]);
+
+  // Sync with global header branch selector
+  useEffect(() => {
+    if (selectedBranchId !== undefined) {
+      setFilterBranchId(selectedBranchId || 'ALL');
+      setCurrentPage(1);
+    }
+  }, [selectedBranchId]);
+
+  const handleBranchFilterChange = (newBranchId: string) => {
+    setFilterBranchId(newBranchId);
+    setCurrentPage(1);
+    setSelectedBranchId(newBranchId === 'ALL' ? null : newBranchId);
+  };
+
 interface DispatchItemRow {
   productId: string;
   quantity: number;
@@ -113,9 +162,11 @@ interface DispatchItemRow {
   const [dispatchForm, setDispatchForm] = useState<{
     destBranchId: string;
     items: DispatchItemRow[];
+    autoReceive: boolean;
   }>({
     destBranchId: '',
     items: [{ productId: '', quantity: 40 }],
+    autoReceive: true,
   });
 
   const [receiveModalTarget, setReceiveModalTarget] = useState<TransferItem | null>(null);
@@ -131,8 +182,23 @@ interface DispatchItemRow {
 
   const fetchData = async (force: boolean | any = false) => {
     const isForce = force === true;
-    const endpoint = selectedBranchId ? `/transfers?branchId=${selectedBranchId}` : '/transfers?branchId=ALL';
-    const cached = getCachedApiData<{ transfers: TransferItem[]; metrics: TransferMetrics }>(endpoint);
+    const params = new URLSearchParams();
+    if (filterBranchId && filterBranchId !== 'ALL') {
+      params.append('branchId', filterBranchId);
+    } else {
+      params.append('branchId', 'ALL');
+    }
+    if (filterStatus && filterStatus !== 'ALL') {
+      params.append('status', filterStatus);
+    }
+    if (debouncedSearch.trim()) {
+      params.append('search', debouncedSearch.trim());
+    }
+    params.append('page', String(currentPage));
+    params.append('limit', String(pageSize));
+
+    const endpoint = `/transfers?${params.toString()}`;
+    const cached = getCachedApiData<{ transfers: TransferItem[]; metrics: TransferMetrics; pagination?: PaginationData }>(endpoint);
 
     if (!cached && !isForce) {
       setLoading(true);
@@ -140,7 +206,7 @@ interface DispatchItemRow {
     setError(null);
 
     const [transfersRes, branchesRes, productsRes] = await Promise.all([
-      apiRequest<{ transfers: TransferItem[]; metrics: TransferMetrics }>(endpoint, { skipCache: isForce }),
+      apiRequest<{ transfers: TransferItem[]; metrics: TransferMetrics; pagination?: PaginationData }>(endpoint, { skipCache: isForce }),
       apiRequest<BranchOption[]>('/branches', { skipCache: isForce }),
       apiRequest<ProductOption[]>('/products', { skipCache: isForce }),
     ]);
@@ -154,6 +220,14 @@ interface DispatchItemRow {
         loavesDistributedToday: 0,
         totalManifestsCount: 0,
       });
+      if (transfersRes.data.pagination) {
+        setTotalPages(transfersRes.data.pagination.totalPages || 1);
+        setTotalCount(transfersRes.data.pagination.total || 0);
+      } else {
+        const total = transfersRes.data.metrics?.totalManifestsCount ?? (transfersRes.data.transfers?.length || 0);
+        setTotalCount(total);
+        setTotalPages(Math.max(1, Math.ceil(total / pageSize)));
+      }
     } else {
       if (transfers.length === 0) {
         setError(transfersRes.error || 'Failed to load transfers');
@@ -175,7 +249,10 @@ interface DispatchItemRow {
     }
 
     if (productsRes.data) {
-      const prodList = Array.isArray(productsRes.data) ? productsRes.data : [];
+      const prodList = (Array.isArray(productsRes.data) ? productsRes.data : []).map((p: any) => ({
+        ...p,
+        availableStock: Number(p.availableStock ?? p.currentHouseStock ?? 0),
+      }));
       setProducts(prodList);
       const available = prodList.filter((p) => (p.availableStock ?? 0) > 0);
       if (available.length > 0) {
@@ -195,18 +272,21 @@ interface DispatchItemRow {
 
   useEffect(() => {
     fetchData();
-  }, [selectedBranchId]);
+  }, [filterBranchId, filterStatus, debouncedSearch, currentPage, pageSize]);
 
   const openDispatchModal = () => {
     const available = products.filter((p) => (p.availableStock ?? 0) > 0);
     const spokes = branches.filter((b) => !b.isHub);
     const defaultProd = available[0] || products[0];
+    const defaultStock = defaultProd?.availableStock ?? 0;
+    const initialQty = defaultStock > 0 ? Math.min(40, defaultStock) : 0;
     setDispatchForm({
       destBranchId: spokes[0]?.id || branches[0]?.id || '',
+      autoReceive: true,
       items: [
         {
           productId: defaultProd?.id || '',
-          quantity: defaultProd ? Math.min(40, defaultProd.availableStock ?? 40) : 1,
+          quantity: initialQty,
         },
       ],
     });
@@ -217,13 +297,15 @@ interface DispatchItemRow {
     const available = products.filter((p) => (p.availableStock ?? 0) > 0);
     const unused = available.find((p) => !dispatchForm.items.some((it) => it.productId === p.id)) || available[0] || products[0];
     if (!unused) return;
+    const unusedStock = unused.availableStock ?? 0;
+    const initialQty = unusedStock > 0 ? Math.min(40, unusedStock) : 0;
     setDispatchForm((prev) => ({
       ...prev,
       items: [
         ...prev.items,
         {
           productId: unused.id,
-          quantity: Math.min(40, unused.availableStock ?? 40),
+          quantity: initialQty,
         },
       ],
     }));
@@ -232,7 +314,24 @@ interface DispatchItemRow {
   const handleUpdateItem = (index: number, updates: Partial<DispatchItemRow>) => {
     setDispatchForm((prev) => {
       const nextItems = [...prev.items];
-      nextItems[index] = { ...nextItems[index], ...updates };
+      const currentItem = nextItems[index];
+      if (!currentItem) return prev;
+
+      const nextProductId = updates.productId !== undefined ? updates.productId : currentItem.productId;
+      const targetProd = products.find((p) => p.id === nextProductId);
+      const stock = targetProd?.availableStock ?? 0;
+
+      let nextQuantity = updates.quantity !== undefined ? updates.quantity : currentItem.quantity;
+      if (stock > 0 && nextQuantity > stock) {
+        nextQuantity = stock;
+      }
+
+      nextItems[index] = {
+        ...currentItem,
+        ...updates,
+        productId: nextProductId,
+        quantity: nextQuantity,
+      };
       return { ...prev, items: nextItems };
     });
   };
@@ -327,6 +426,7 @@ interface DispatchItemRow {
       method: 'POST',
       body: JSON.stringify({
         destBranchId: dispatchForm.destBranchId,
+        autoReceive: dispatchForm.autoReceive,
         items: dispatchForm.items.map((it) => ({
           productId: it.productId,
           unitsCount: Number(it.quantity),
@@ -525,18 +625,100 @@ interface DispatchItemRow {
 
       {/* Transfers Table */}
       <div className="bg-[#FFFDF8] border border-[#EDE4D5] rounded-3xl overflow-hidden shadow-2xs">
-        <div className="p-4 sm:p-5 border-b border-[#EDE4D5] flex items-center justify-between">
+        <div className="p-4 sm:p-5 border-b border-[#EDE4D5] flex flex-col md:flex-row md:items-center justify-between gap-4">
           <div>
             <h2 className="text-sm font-black text-[#2C1B10]">
-              {l('የዛሬ የተላኩ ማኒፌስቶች', 'Maanifeestiiwwan Har\'a Ergaman', 'Today\'s Delivery Manifests')}
+              {l('የተላኩ ማኒፌስቶች', 'Maanifeestiiwwan Ergaman', 'Delivery Manifests')}
             </h2>
             <p className="text-xs text-[#8C7361] mt-0.5">
               {l('ከዳታቤዝ የቀረበ የሳጥን ዳቦ ማዘዋወሪያ እና የርክክብ ሁኔታ', 'Haala dhiyeessii fi walharkaa fuudhinsaa dhugaa', 'Real-time database-tracked crate dispatches')}
             </p>
           </div>
-          <span className="text-xs font-bold text-[#8C7361]">
-            {transfers.length} {l('ማኒፌስቶች', 'maanifeestii', 'manifests')}
+          <span className="text-xs font-bold text-[#8C7361] self-start md:self-auto">
+            {totalCount} {l('ማኒፌስቶች', 'maanifeestii', 'manifests')}
           </span>
+        </div>
+
+        {/* Filter Toolbar: Branch Filter, Status Filter & Search */}
+        <div className="p-3 sm:p-4 bg-[#FAF7EE]/60 border-b border-[#EDE4D5] flex flex-col lg:flex-row items-stretch lg:items-center justify-between gap-3">
+          {/* Left filters: Branch & Status */}
+          <div className="flex flex-wrap items-center gap-2.5">
+            {/* Branch Filter Dropdown */}
+            <div className="relative flex items-center min-w-[180px]">
+              <Building2 className="w-4 h-4 text-[#8C7361] absolute left-3 pointer-events-none" />
+              <select
+                value={filterBranchId}
+                onChange={(e) => handleBranchFilterChange(e.target.value)}
+                className="w-full pl-9 pr-8 py-2 bg-white border border-[#EDE4D5] rounded-xl text-xs font-bold text-[#2C1B10] hover:border-[#8C7361] focus:ring-1 focus:ring-[#E87A18] focus:outline-none transition cursor-pointer appearance-none shadow-2xs"
+                title={l('በቅርንጫፍ አጣራ', 'Dammeen calali', 'Filter by Branch')}
+              >
+                <option value="ALL">🌐 {l('ሁሉም ቅርንጫፎች', 'Dammeewwan Hunda', 'All Branches')}</option>
+                {branches.map((b) => (
+                  <option key={b.id} value={b.id}>
+                    📍 {translateBranchName(b.name, language)} {b.isHub ? `(${l('ማዕከል', 'Wiirtuu', 'Hub')})` : ''}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            {/* Status Filter Tabs */}
+            <div className="flex items-center p-1 bg-white border border-[#EDE4D5] rounded-xl shadow-2xs">
+              <button
+                type="button"
+                onClick={() => { setFilterStatus('ALL'); setCurrentPage(1); }}
+                className={`px-3 py-1.5 rounded-lg text-xs font-extrabold transition-all cursor-pointer ${
+                  filterStatus === 'ALL'
+                    ? 'bg-[#E87A18] text-white shadow-xs'
+                    : 'text-[#8C7361] hover:text-[#2C1B10]'
+                }`}
+              >
+                {l('ሁሉም', 'Hunda', 'All')}
+              </button>
+              <button
+                type="button"
+                onClick={() => { setFilterStatus('DISPATCHED'); setCurrentPage(1); }}
+                className={`px-3 py-1.5 rounded-lg text-xs font-extrabold transition-all cursor-pointer ${
+                  filterStatus === 'DISPATCHED'
+                    ? 'bg-[#E87A18] text-white shadow-xs'
+                    : 'text-[#8C7361] hover:text-[#2C1B10]'
+                }`}
+              >
+                {l('በመንገድ ላይ', 'Karaarratti', 'In Transit')}
+              </button>
+              <button
+                type="button"
+                onClick={() => { setFilterStatus('RECEIVED'); setCurrentPage(1); }}
+                className={`px-3 py-1.5 rounded-lg text-xs font-extrabold transition-all cursor-pointer ${
+                  filterStatus === 'RECEIVED'
+                    ? 'bg-[#E87A18] text-white shadow-xs'
+                    : 'text-[#8C7361] hover:text-[#2C1B10]'
+                }`}
+              >
+                {l('የተረከቡ', 'Kan Fudhataman', 'Received')}
+              </button>
+            </div>
+          </div>
+
+          {/* Right search input */}
+          <div className="relative w-full lg:w-72">
+            <Search className="w-4 h-4 text-[#8C7361] absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+            <input
+              type="text"
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+              placeholder={l('ማኒፌስት፣ ምርት ወይም ሹፌር ፈልግ...', 'Maanifeestii, oomisha barbaadi...', 'Search manifest, product, driver...')}
+              className="w-full pl-9 pr-8 py-2 bg-white border border-[#EDE4D5] rounded-xl text-xs text-[#2C1B10] placeholder:text-[#8C7361]/60 hover:border-[#8C7361] focus:ring-1 focus:ring-[#E87A18] focus:outline-none transition shadow-2xs"
+            />
+            {searchTerm && (
+              <button
+                type="button"
+                onClick={() => setSearchTerm('')}
+                className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[#8C7361] hover:text-[#2C1B10]"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            )}
+          </div>
         </div>
 
         {loading ? (
@@ -696,6 +878,23 @@ interface DispatchItemRow {
             </div>
           </>
         )}
+
+        {/* Pagination Controls */}
+        <PaginationControls
+          currentPage={currentPage}
+          totalPages={totalPages}
+          totalItems={totalCount}
+          pageSize={pageSize}
+          pageSizeOptions={[10, 15, 25, 50]}
+          onPageChange={(page) => setCurrentPage(page)}
+          onPageSizeChange={(newSize) => {
+            setPageSize(newSize);
+            setCurrentPage(1);
+          }}
+          isLoading={loading}
+          itemLabel={l('ማኒፌስቶች', 'maanifeestii', 'manifests')}
+          className="border-t border-[#EDE4D5] p-3 sm:p-4 bg-[#FFFDF8]"
+        />
       </div>
 
       {/* Create Manifest Modal (Multi-Item Dispatch) */}
@@ -831,7 +1030,38 @@ interface DispatchItemRow {
                               max={stock > 0 ? stock : 1}
                               required
                               value={item.quantity || ''}
-                              onChange={(e) => handleUpdateItem(index, { quantity: Number(e.target.value) })}
+                              onChange={(e) => {
+                                const raw = e.target.value;
+                                if (raw === '') {
+                                  handleUpdateItem(index, { quantity: 0 });
+                                  return;
+                                }
+                                const val = parseInt(raw, 10);
+                                if (isNaN(val)) return;
+                                const clamped = stock > 0 ? Math.min(Math.max(1, val), stock) : 0;
+                                handleUpdateItem(index, { quantity: clamped });
+                              }}
+                              onKeyDown={(e) => {
+                                if (['e', 'E', '+', '-'].includes(e.key)) {
+                                  e.preventDefault();
+                                }
+                                if (e.key >= '0' && e.key <= '9') {
+                                  const input = e.currentTarget;
+                                  const start = input.selectionStart ?? 0;
+                                  const end = input.selectionEnd ?? 0;
+                                  const nextStr = input.value.slice(0, start) + e.key + input.value.slice(end);
+                                  const nextVal = parseInt(nextStr, 10);
+                                  if (!isNaN(nextVal) && stock > 0 && nextVal > stock) {
+                                    e.preventDefault();
+                                    handleUpdateItem(index, { quantity: stock });
+                                  }
+                                }
+                              }}
+                              onBlur={() => {
+                                if ((item.quantity || 0) <= 0 && stock > 0) {
+                                  handleUpdateItem(index, { quantity: 1 });
+                                }
+                              }}
                               className={`w-full px-3 py-2 rounded-xl border font-mono font-bold text-xs ${
                                 isOver || isZero
                                   ? 'border-rose-400 bg-rose-50 text-rose-900 focus:ring-rose-400'
@@ -842,17 +1072,21 @@ interface DispatchItemRow {
 
                           <div className="flex flex-col justify-end text-[10px]">
                             <div className="flex items-center gap-1.5 flex-wrap">
-                              {[10, 40, 100].map((step) => (
-                                <button
-                                  key={step}
-                                  type="button"
-                                  disabled={step > stock}
-                                  onClick={() => handleUpdateItem(index, { quantity: step })}
-                                  className="px-2 py-1 rounded-lg bg-white border border-[#EDE4D5] text-[10px] font-bold text-[#4A2E1B] hover:bg-[#F4ECE1] disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer"
-                                >
-                                  {step === 40 ? '1 Crate (40)' : `+${step}`}
-                                </button>
-                              ))}
+                              {[10, 40, 100].map((step) => {
+                                const isCrate = step === 40;
+                                const isTooHigh = step > stock || stock <= 0;
+                                return (
+                                  <button
+                                    key={step}
+                                    type="button"
+                                    disabled={isTooHigh}
+                                    onClick={() => handleUpdateItem(index, { quantity: Math.min(step, stock) })}
+                                    className="px-2 py-1 rounded-lg bg-white border border-[#EDE4D5] text-[10px] font-bold text-[#4A2E1B] hover:bg-[#F4ECE1] disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer"
+                                  >
+                                    {isCrate ? '1 Crate (40)' : `${step}`}
+                                  </button>
+                                );
+                              })}
                               {stock > 0 && (
                                 <button
                                   type="button"
@@ -900,6 +1134,24 @@ interface DispatchItemRow {
                     );
                   })}
                 </div>
+
+                {/* Auto Receive Checkbox */}
+                <label className="flex items-start gap-2.5 p-3 bg-amber-50/60 border border-amber-200/80 rounded-xl cursor-pointer hover:bg-amber-50 transition-colors">
+                  <input
+                    type="checkbox"
+                    checked={dispatchForm.autoReceive}
+                    onChange={(e) => setDispatchForm({ ...dispatchForm, autoReceive: e.target.checked })}
+                    className="mt-0.5 rounded text-[#E87A18] focus:ring-[#E87A18] w-4 h-4 cursor-pointer shrink-0"
+                  />
+                  <div className="text-xs">
+                    <span className="font-bold text-[#2C1B10] block">
+                      {l('ቀጥታ ዝውውር (በተቀባይ ቅርንጫፍ ወዲያውኑ ገቢ ይሁን)', 'Daddabarsa Kallattii (Dammeen fudhatu yeruma sana haa fudhatu)', 'Direct Transfer (Auto-receive & credit stock immediately at destination)')}
+                    </span>
+                    <span className="text-[10px] text-[#8C7361] block mt-0.5">
+                      {l('ከተመረጠ ዕቃው ወዲያውኑ ወደ ተቀባይ ቅርንጫፍ ክምችት ገቢ ሆኖ ለሽያጭ ዝግጁ ይሆናል።', 'Yoo filatame oomishni battalatti kuusaa dammee sanatti galmaa\'ee gurgurtaaf qophii ta\'a.', 'If checked, transferred items are immediately added to the destination branch inventory without waiting for a manual receipt.')}
+                    </span>
+                  </div>
+                </label>
 
                 {/* Button to Add More Products */}
                 <button
