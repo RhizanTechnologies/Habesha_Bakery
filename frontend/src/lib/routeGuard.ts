@@ -21,27 +21,30 @@ export type UserRole =
  * Returns the default designated home route for a given user role.
  */
 export function getRoleHomeRoute(userOrRole?: { role?: string | null; permissions?: string[] } | string | null): string {
+  if (!userOrRole) return '/login';
   const role = typeof userOrRole === 'string' ? userOrRole : userOrRole?.role;
-  switch (role) {
-    case 'OWNER':
-      return '/';
-    case 'ADMIN':
-      return '/production/history';
-    case 'CASHIER':
-      return '/customer-credits';
-    case 'BAKER':
-      return '/production';
-    case 'CAKE_WORKER':
-      return '/production';
-    case 'SAMBUSA_WORKER':
-      return '/production';
-    case 'STOCK_KEEPER':
-      return '/stock';
-    case 'EMPLOYEE':
-      return '/my-profile';
-    default:
-      return '/login';
-  }
+  const permissions = typeof userOrRole === 'object' && userOrRole?.permissions ? userOrRole.permissions : [];
+
+  if (role === 'OWNER') return '/';
+  if (role === 'ADMIN') return '/production/history';
+  if (role === 'CASHIER') return '/customer-credits';
+  if (role === 'BAKER' || role === 'CAKE_WORKER' || role === 'SAMBUSA_WORKER') return '/production';
+  if (role === 'STOCK_KEEPER') return '/stock';
+
+  // For Custom Roles / Employees with granted capabilities:
+  if (permissions.includes('access_daily_sessions')) return '/daily-sessions';
+  if (permissions.includes('access_customer_credits')) return '/customer-credits';
+  if (permissions.includes('access_production')) return '/production';
+  if (permissions.includes('access_stock')) return '/stock';
+  if (permissions.includes('access_attendance')) return '/attendance';
+  if (permissions.includes('access_expenses')) return '/expenses';
+  if (permissions.includes('access_suppliers')) return '/suppliers';
+  if (permissions.includes('access_transfers')) return '/transfers';
+  if (permissions.includes('access_products')) return '/products';
+  if (permissions.includes('access_payroll')) return '/payroll';
+  if (permissions.includes('access_dashboard')) return '/';
+
+  return '/my-profile';
 }
 
 /**
@@ -115,7 +118,7 @@ export function isRouteAllowed(
 
   // Inter-Branch Transfers fallback
   if (path === '/transfers' || path.startsWith('/transfers/')) {
-    return role === 'ADMIN' || (role as string) === 'STOREKEEPER' || role === 'STOCK_KEEPER' || role === 'CASHIER' || (role as string) === 'DRIVER';
+    return role === 'ADMIN' || role === 'CASHIER' || (role as string) === 'DRIVER';
   }
 
   // 1. ADMIN

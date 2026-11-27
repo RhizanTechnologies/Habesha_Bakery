@@ -146,6 +146,7 @@ export default function UsersPage() {
 
   const { data: pageData, isLoading } = useQuery({
     queryKey: ["users-page", selectedBranchId],
+    refetchOnMount: "always",
     placeholderData: (prev) => prev,
     queryFn: async () => {
       const params: Record<string, string> = {};
@@ -316,7 +317,11 @@ export default function UsersPage() {
       u.phone.includes(term) ||
       u.role.toLowerCase().includes(term) ||
       (u.branch?.name && u.branch.name.toLowerCase().includes(term));
-    const matchesRole = selectedRole === "ALL" || u.role === selectedRole;
+    const matchesRole =
+      selectedRole === "ALL" ||
+      u.role === selectedRole ||
+      u.customRoleId === selectedRole ||
+      (selectedRole.startsWith("CUSTOM_") && u.customRoleId === selectedRole.replace("CUSTOM_", ""));
     const matchesStatus =
       selectedStatus === "ALL" ||
       (selectedStatus === "ACTIVE" && u.isActive) ||
@@ -473,11 +478,22 @@ export default function UsersPage() {
                     className="h-9 px-3 rounded-xl border border-[#EDE4D5] bg-white text-xs font-medium text-[#2C1B10] focus:outline-none focus:ring-2 focus:ring-[#E87A18]"
                   >
                     <option value="ALL">{t('users.allRoles') || "All Roles"}</option>
-                    {roles.map((r) => (
-                      <option key={r} value={r}>
-                        {getRoleLabel(r)}
-                      </option>
-                    ))}
+                    {customRoles.length > 0 && (
+                      <optgroup label={l("ብጁ የሥራ ኃላፊነቶች", "Gahee Hojii Keessan", "Custom Roles")}>
+                        {customRoles.map((cr: any) => (
+                          <option key={cr.id} value={`CUSTOM_${cr.id}`}>
+                            ✨ {language === "am" && cr.nameAm ? cr.nameAm : language === "om" && cr.nameOm ? cr.nameOm : cr.name}
+                          </option>
+                        ))}
+                      </optgroup>
+                    )}
+                    <optgroup label={l("መደበኛ ኃላፊነቶች", "Gahee Idilee", "Standard Roles")}>
+                      {roles.map((r) => (
+                        <option key={r} value={r}>
+                          {getRoleLabel(r)}
+                        </option>
+                      ))}
+                    </optgroup>
                   </select>
 
                   <select

@@ -14,6 +14,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { DetailSkeleton, KpiCardsSkeleton, TableSkeleton } from "@/components/ui/skeletons";
 import ConfirmModal from "@/components/ConfirmModal";
 import { useUnsavedChanges } from "@/hooks/useUnsavedChanges";
+import { hasPrivilege } from "@/lib/privileges";
 
 interface Product {
   id: string;
@@ -99,11 +100,11 @@ export default function SessionClosePage({ params }: { params: Promise<{ id: str
   const queryClient = useQueryClient();
   const isOwner = user?.role === "OWNER";
   const isAdmin = user?.role === "ADMIN";
-  const isAdminOrOwner = isOwner || isAdmin;
+  const isAdminOrOwner = isOwner || isAdmin || hasPrivilege(user, 'access_daily_sessions');
 
   useEffect(() => {
     if (user && !isAdminOrOwner) {
-      router.replace('/customer-credits');
+      router.replace('/my-profile');
     }
   }, [user, isAdminOrOwner, router]);
 

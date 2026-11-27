@@ -20,6 +20,7 @@ import { useUnsavedChanges } from '@/hooks/useUnsavedChanges';
 import { ConfirmModal } from '@/components/ConfirmModal';
 import { PaginationControls } from '@/components/ui/PaginationControls';
 import { formatEthDate } from '@/lib/ethiopianDate';
+import { hasPrivilege } from '@/lib/privileges';
 
 interface DailySession {
   id: string;
@@ -54,11 +55,11 @@ export default function DailySessionsPage() {
   
   const isOwner = user?.role === 'OWNER';
   const isAdmin = user?.role === 'ADMIN';
-  const canManageSessions = isOwner || isAdmin;
+  const canManageSessions = isOwner || isAdmin || hasPrivilege(user, 'access_daily_sessions');
 
   useEffect(() => {
     if (user && !canManageSessions) {
-      router.replace('/customer-credits');
+      router.replace('/my-profile');
     }
   }, [user, canManageSessions, router]);
 
@@ -308,25 +309,25 @@ export default function DailySessionsPage() {
   return (
     <DashboardLayout>
       {/* Top Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-6">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4 sm:mb-6">
         <div>
-          <h1 className="text-2xl font-extrabold tracking-tight text-[#2C1B10]">{t('sessions.title')}</h1>
+          <h1 className="text-xl sm:text-2xl font-extrabold tracking-tight text-[#2C1B10]">{t('sessions.title')}</h1>
         </div>
-        <div className="flex items-center gap-2.5 flex-wrap">
+        <div className="flex items-center gap-2 flex-wrap w-full sm:w-auto">
           <Button
             variant={isTodayOnly ? "default" : "outline"}
             onClick={() => {
               setIsTodayOnly(!isTodayOnly);
               setPage(1);
             }}
-            className={`rounded-xl text-xs sm:text-sm font-bold h-10 px-3.5 transition-all ${
+            className={`flex-1 sm:flex-initial rounded-xl text-xs sm:text-sm font-bold h-9 sm:h-10 px-3 sm:px-3.5 transition-all text-center justify-center ${
               isTodayOnly
                 ? "bg-[#E87A18] hover:bg-[#D66B0F] text-white shadow-xs"
                 : "border-[#EDE4D5] hover:bg-[#FAF6F0] text-[#4A2E1B]"
             }`}
           >
-            <CalendarDays className="w-4 h-4 mr-1.5" />
-            {isTodayOnly ? `${t('common.date')} (Today Active)` : t('common.date')}
+            <CalendarDays className="w-4 h-4 mr-1.5 shrink-0" />
+            <span className="truncate">{isTodayOnly ? `${t('common.date')} (Today Active)` : t('common.date')}</span>
           </Button>
 
           {!isLoading && sessionData && canManageSessions && (
@@ -334,25 +335,28 @@ export default function DailySessionsPage() {
               !todaySession ? (
                 <Button
                   onClick={() => handleOpenNewSession()}
-                  className="bg-[#4A2E1B] hover:bg-[#3D2314] text-white font-bold rounded-xl text-xs sm:text-sm h-10 px-4 shadow-sm animate-in fade-in duration-150"
+                  className="flex-1 sm:flex-initial bg-[#4A2E1B] hover:bg-[#3D2314] text-white font-bold rounded-xl text-xs sm:text-sm h-9 sm:h-10 px-3.5 sm:px-4 shadow-sm animate-in fade-in duration-150 text-center justify-center"
                 >
-                  <Plus className="w-4 h-4 mr-1.5" /> {t('sessions.startNewSession')}
+                  <Plus className="w-4 h-4 mr-1.5 shrink-0" />
+                  <span className="truncate">{t('sessions.startNewSession')}</span>
                 </Button>
               ) : todaySession.status === 'CLOSED' ? (
                 <Button
                   onClick={() => handleReopenSession(todaySession)}
-                  className="bg-emerald-700 hover:bg-emerald-800 text-white font-bold rounded-xl text-xs sm:text-sm h-10 px-4 shadow-sm animate-in fade-in duration-150"
+                  className="flex-1 sm:flex-initial bg-emerald-700 hover:bg-emerald-800 text-white font-bold rounded-xl text-xs sm:text-sm h-9 sm:h-10 px-3.5 sm:px-4 shadow-sm animate-in fade-in duration-150 text-center justify-center"
                 >
-                  <RotateCcw className="w-4 h-4 mr-1.5" /> {t('sessions.reopen') || "Reopen Today's Session"}
+                  <RotateCcw className="w-4 h-4 mr-1.5 shrink-0" />
+                  <span className="truncate">{t('sessions.reopen') || "Reopen Session"}</span>
                 </Button>
               ) : null
             ) : (
               (hasAnyUnopenedToday || hasAnyClosedToday) ? (
                 <Button
                   onClick={() => setIsBranchSelectModalOpen(true)}
-                  className="bg-[#4A2E1B] hover:bg-[#3D2314] text-white font-bold rounded-xl text-xs sm:text-sm h-10 px-4 shadow-sm animate-in fade-in duration-150"
+                  className="flex-1 sm:flex-initial bg-[#4A2E1B] hover:bg-[#3D2314] text-white font-bold rounded-xl text-xs sm:text-sm h-9 sm:h-10 px-3.5 sm:px-4 shadow-sm animate-in fade-in duration-150 text-center justify-center"
                 >
-                  <Plus className="w-4 h-4 mr-1.5" /> {hasAnyUnopenedToday ? t('sessions.startNewSession') : "Reopen / Start Session"}
+                  <Plus className="w-4 h-4 mr-1.5 shrink-0" />
+                  <span className="truncate">{hasAnyUnopenedToday ? t('sessions.startNewSession') : "Reopen / Start Session"}</span>
                 </Button>
               ) : null
             )

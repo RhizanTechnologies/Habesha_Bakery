@@ -82,7 +82,7 @@ export const SYSTEM_PRIVILEGES: PrivilegeDefinition[] = [
     descriptionAm: 'ከዋናው ማዕከል ወደ ቅርንጫፎች የዳቦ ሳጥኖችን መላክና መቀበል',
     descriptionOm: 'Saanduuqa dabboo dammeewwaniif erguu fi simachuu',
     category: 'Operations',
-    defaultRoles: ['OWNER', 'ADMIN', 'STOCK_KEEPER', 'STOREKEEPER', 'DRIVER', 'CASHIER'],
+    defaultRoles: ['OWNER', 'ADMIN', 'DRIVER', 'CASHIER'],
   },
   {
     key: 'access_categories',

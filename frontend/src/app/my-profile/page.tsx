@@ -104,7 +104,7 @@ const MONTH_NAMES = [
 
 export default function MyProfilePage() {
   const { user: authUser, updateUser } = useAuth();
-  const { t, l } = useLanguage();
+  const { t, l, language } = useLanguage();
   const queryClient = useQueryClient();
   const [activeTab, setActiveTab] = useState<'payroll' | 'loans' | 'penalties' | 'settings'>('payroll');
   const { data: attendanceRules } = useQuery<{
@@ -399,8 +399,19 @@ export default function MyProfilePage() {
               <div className="min-w-0 flex-1">
                 <div className="flex flex-wrap items-center gap-1.5 xs:gap-2 mb-1">
                   <Badge className="bg-[#E87A18] text-white text-[10px] xs:text-xs px-2 xs:px-3 py-0.5 uppercase tracking-wider font-extrabold border-none">
-                    {getRoleLabel(u?.role)}
+                    {(u as any)?.customRole
+                      ? language === 'am' && (u as any).customRole.nameAm
+                        ? (u as any).customRole.nameAm
+                        : language === 'om' && (u as any).customRole.nameOm
+                        ? (u as any).customRole.nameOm
+                        : (u as any).customRole.name
+                      : getRoleLabel(u?.role)}
                   </Badge>
+                  {(u as any)?.customRole && (
+                    <span className="text-[10px] xs:text-xs font-semibold text-amber-200/90 flex items-center bg-white/10 px-2 xs:px-2.5 py-0.5 rounded-full shrink-0">
+                      Base: {getRoleLabel(u?.role)}
+                    </span>
+                  )}
                   {/* Assigned Branch (Prominently displayed on both Mobile & Desktop) */}
                   <span className="text-[10px] xs:text-xs font-semibold text-amber-100 flex items-center bg-white/15 backdrop-blur-sm px-2.5 py-0.5 rounded-full shrink-0 border border-white/15 shadow-2xs">
                     <Building2 className="w-3 h-3 mr-1 text-amber-300 shrink-0" />

@@ -13,8 +13,8 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { toast } from "sonner";
 import { getFileUrl, getImageUrl } from "@/lib/utils";
-import { ArrowLeft, UserCheck, Building2, Calendar, FileText, Upload, Save, Trash2, Eye, EyeOff, AlertTriangle, Lock } from "lucide-react";
-import { useQueryClient } from "@tanstack/react-query";
+import { ArrowLeft, UserCheck, Building2, Calendar, FileText, Upload, Save, Trash2, Eye, EyeOff, AlertTriangle, Lock, Sparkles } from "lucide-react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { DetailSkeleton } from "@/components/ui/skeletons";
 import { useUnsavedChanges } from "@/hooks/useUnsavedChanges";
 import { ConfirmModal } from "@/components/ConfirmModal";
@@ -47,6 +47,16 @@ interface UserData {
   avatarUrl?: string | null;
   filesUrl: string | null;
   requiresAttendance?: boolean;
+  customRoleId?: string | null;
+  customRole?: {
+    id: string;
+    code: string;
+    name: string;
+    nameAm?: string | null;
+    nameOm?: string | null;
+    baseRole: string;
+    permissions: string[];
+  } | null;
 }
 
 export default function EditUserPage() {
@@ -55,8 +65,26 @@ export default function EditUserPage() {
   const userId = params?.id as string;
   const { user } = useAuth();
   const { branches } = useBranch();
-  const { t, l } = useLanguage();
+  const { t, l, language } = useLanguage();
   const queryClient = useQueryClient();
+
+  // Fetch custom roles configured by Owner
+  const { data: rolesData } = useQuery({
+    queryKey: ['roles-list'],
+    queryFn: async () => {
+      const res = await api.get('/roles');
+      return res.data;
+    },
+  });
+  const customRoles: Array<{
+    id: string;
+    code: string;
+    name: string;
+    nameAm?: string | null;
+    nameOm?: string | null;
+    baseRole: string;
+    permissions: string[];
+  }> = rolesData?.customRoles || [];
 
   const [loading, setLoading] = useState(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -118,7 +146,8 @@ export default function EditUserPage() {
         if (res.data) {
           setUserData(res.data);
           setSelectedBranchId(res.data.branchId || "");
-          setSelectedRole(res.data.role || "");
+          const initialRole = res.data.customRoleId ? `CUSTOM_${res.data.customRoleId}` : (res.data.role || "");
+          setSelectedRole(initialRole);
           setRequiresAttendance(res.data.requiresAttendance !== false);
           if (res.data.startDate) setStartDateVal(res.data.startDate.split("T")[0]);
           if (res.data.lastPaidDate) setLastPaidDateVal(res.data.lastPaidDate.split("T")[0]);
@@ -174,6 +203,18 @@ export default function EditUserPage() {
         return;
       }
 
+      if (role && role.startsWith("CUSTOM_")) {
+        const cId = role.replace("CUSTOM_", "");
+        const matched = customRoles.find((c) => c.id === cId);
+        formData.set("role", matched?.baseRole || "EMPLOYEE");
+        formData.set("customRoleId", cId);
+        if (matched?.permissions && matched.permissions.length > 0) {
+          formData.set("permissions", JSON.stringify(matched.permissions));
+        }
+      } else if (role) {
+        formData.set("customRoleId", "");
+      }
+
       const startDateStr = formData.get("startDate") as string;
       const lastPaidDateStr = formData.get("lastPaidDate") as string;
       if (startDateStr && lastPaidDateStr) {
@@ -213,12 +254,13 @@ export default function EditUserPage() {
 
       toast.success(t('users.toastUserUpdated'));
       await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ["users-page"] }),
-        queryClient.invalidateQueries({ queryKey: ["users"] }),
-        queryClient.invalidateQueries({ queryKey: ["user", userData.id] }),
-        queryClient.invalidateQueries({ queryKey: ["payroll-users"] }),
-        queryClient.invalidateQueries({ queryKey: ["dashboard"] }),
+        queryClient.invalidateQueries({ queryKey: ["users-page"], refetchType: "all" }),
+        queryClient.invalidateQueries({ queryKey: ["users"], refetchType: "all" }),
+        queryClient.invalidateQueries({ queryKey: ["user", userData.id], refetchType: "all" }),
+        queryClient.invalidateQueries({ queryKey: ["payroll-users"], refetchType: "all" }),
+        queryClient.invalidateQueries({ queryKey: ["dashboard"], refetchType: "all" }),
       ]);
+      queryClient.removeQueries({ queryKey: ["users-page"] });
       setIsFormChanged(false);
       router.push("/users");
     } catch (error: any) {
@@ -418,6 +460,8 @@ export default function EditUserPage() {
                   const isRetailSpoke = Boolean(selectedBranch && !selectedBranch.isHub);
                   const baseRoles = ROLES.filter((r) => r !== 'OWNER' || user?.role === 'OWNER');
                   const filteredRoles = isRetailSpoke ? baseRoles.filter((r) => !HUB_ONLY_ROLES.has(r)) : baseRoles;
+                  const filteredCustomRoles = isRetailSpoke ? customRoles.filter((cr) => !HUB_ONLY_ROLES.has(cr.baseRole)) : customRoles;
+
                   return (
                     <>
                       <select
@@ -431,12 +475,34 @@ export default function EditUserPage() {
                         className="w-full h-11 rounded-xl border border-[#EDE4D5] bg-white px-3 text-sm focus:outline-none focus:ring-2 focus:ring-[#E87A18]"
                       >
                         <option value="" disabled>{t('users.selectRolePlaceholder')}</option>
-                        {filteredRoles.map((r) => (
-                          <option key={r} value={r}>
-                            {getRoleLabel(r)}
-                          </option>
-                        ))}
+                        {filteredCustomRoles.length > 0 && (
+                          <optgroup label={l("ብጁ የሥራ ኃላፊነቶች (Custom Roles)", "Gahee Hojii Kan Keessan (Custom Roles)", "Custom Roles (Owner Configured)")}>
+                            {filteredCustomRoles.map((cr) => (
+                              <option key={cr.id} value={`CUSTOM_${cr.id}`}>
+                                ✨ {language === "am" && cr.nameAm ? cr.nameAm : language === "om" && cr.nameOm ? cr.nameOm : cr.name} ({cr.code}) [Archetype: {cr.baseRole}]
+                              </option>
+                            ))}
+                          </optgroup>
+                        )}
+                        <optgroup label={l("መደበኛ የስርዓት ኃላፊነቶች", "Gahee Hojii Idilee", "Standard System Roles")}>
+                          {filteredRoles.map((r) => (
+                            <option key={r} value={r}>
+                              {getRoleLabel(r)}
+                            </option>
+                          ))}
+                        </optgroup>
                       </select>
+                      {selectedRole.startsWith("CUSTOM_") && (
+                        <div className="mt-1.5 flex items-center gap-1.5 text-xs text-amber-800 bg-amber-50 px-2.5 py-1 rounded-lg border border-amber-200">
+                          <Sparkles className="w-3.5 h-3.5 text-[#E87A18] shrink-0" />
+                          <span className="font-bold">
+                            {(() => {
+                              const cr = customRoles.find((c) => `CUSTOM_${c.id}` === selectedRole);
+                              return cr ? `${cr.name} (${cr.permissions.length} capabilities assigned)` : "Custom Role Selected";
+                            })()}
+                          </span>
+                        </div>
+                      )}
                       {isRetailSpoke && (
                         <p className="text-[11px] text-amber-800 mt-1 font-medium">
                           {l(

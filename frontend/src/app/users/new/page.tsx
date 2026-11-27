@@ -12,8 +12,8 @@ import { useLanguage } from "@/context/LanguageContext";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { toast } from "sonner";
-import { ArrowLeft, UserPlus, Building2, Calendar, FileText, Upload, Save, Eye, EyeOff } from "lucide-react";
-import { useQueryClient } from "@tanstack/react-query";
+import { ArrowLeft, UserPlus, Building2, Calendar, FileText, Upload, Save, Eye, EyeOff, Sparkles } from "lucide-react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useUnsavedChanges } from "@/hooks/useUnsavedChanges";
 import { ConfirmModal } from "@/components/ConfirmModal";
 
@@ -25,7 +25,7 @@ export default function NewUserPage() {
   const router = useRouter();
   const { user } = useAuth();
   const { branches } = useBranch();
-  const { t, l } = useLanguage();
+  const { t, l, language } = useLanguage();
   const queryClient = useQueryClient();
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isFormChanged, setIsFormChanged] = useState(false);
@@ -36,6 +36,24 @@ export default function NewUserPage() {
   const [lastPaidDateVal, setLastPaidDateVal] = useState<string>("");
   const [lastPaidTouched, setLastPaidTouched] = useState<boolean>(false);
   const [showPassword, setShowPassword] = useState<boolean>(false);
+
+  // Fetch custom roles configured by Owner
+  const { data: rolesData } = useQuery({
+    queryKey: ['roles-list'],
+    queryFn: async () => {
+      const res = await api.get('/roles');
+      return res.data;
+    },
+  });
+  const customRoles: Array<{
+    id: string;
+    code: string;
+    name: string;
+    nameAm?: string | null;
+    nameOm?: string | null;
+    baseRole: string;
+    permissions: string[];
+  }> = rolesData?.customRoles || [];
 
   const isFormDirty = isFormChanged || !!startDateVal || !!lastPaidDateVal;
   const { showPrompt, setShowPrompt, confirmAction, guardedAction } = useUnsavedChanges(isFormDirty);
@@ -95,6 +113,18 @@ export default function NewUserPage() {
         return;
       }
 
+      if (roleStr && roleStr.startsWith("CUSTOM_")) {
+        const cId = roleStr.replace("CUSTOM_", "");
+        const matched = customRoles.find((c) => c.id === cId);
+        formData.set("role", matched?.baseRole || "EMPLOYEE");
+        formData.set("customRoleId", cId);
+        if (matched?.permissions && matched.permissions.length > 0) {
+          formData.set("permissions", JSON.stringify(matched.permissions));
+        }
+      } else {
+        formData.set("customRoleId", "");
+      }
+
       const startDateStr = formData.get("startDate") as string;
       const lastPaidDateStr = formData.get("lastPaidDate") as string;
       if (startDateStr && lastPaidDateStr) {
@@ -130,11 +160,12 @@ export default function NewUserPage() {
       });
 
       await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ["users-page"] }),
-        queryClient.invalidateQueries({ queryKey: ["users"] }),
-        queryClient.invalidateQueries({ queryKey: ["payroll-users"] }),
-        queryClient.invalidateQueries({ queryKey: ["dashboard"] }),
+        queryClient.invalidateQueries({ queryKey: ["users-page"], refetchType: "all" }),
+        queryClient.invalidateQueries({ queryKey: ["users"], refetchType: "all" }),
+        queryClient.invalidateQueries({ queryKey: ["payroll-users"], refetchType: "all" }),
+        queryClient.invalidateQueries({ queryKey: ["dashboard"], refetchType: "all" }),
       ]);
+      queryClient.removeQueries({ queryKey: ["users-page"] });
       setIsFormChanged(false);
       toast.success(t('users.toastUserCreated'));
       router.push("/users");
@@ -240,6 +271,8 @@ export default function NewUserPage() {
                   const isRetailSpoke = Boolean(selectedBranch && !selectedBranch.isHub);
                   const baseRoles = user?.role === "OWNER" ? [...ROLES] : ROLES.filter((r) => r !== "OWNER");
                   const filteredRoles = isRetailSpoke ? baseRoles.filter((r) => !HUB_ONLY_ROLES.has(r)) : baseRoles;
+                  const filteredCustomRoles = isRetailSpoke ? customRoles.filter((cr) => !HUB_ONLY_ROLES.has(cr.baseRole)) : customRoles;
+
                   return (
                     <>
                       <select
@@ -253,12 +286,34 @@ export default function NewUserPage() {
                         className="w-full h-11 rounded-xl border border-[#EDE4D5] bg-white px-3 text-sm focus:outline-none focus:ring-2 focus:ring-[#E87A18]"
                       >
                         <option value="" disabled>{t('users.selectRolePlaceholder')}</option>
-                        {filteredRoles.map((r) => (
-                          <option key={r} value={r}>
-                            {getRoleLabel(r)}
-                          </option>
-                        ))}
+                        {filteredCustomRoles.length > 0 && (
+                          <optgroup label={l("ብጁ የሥራ ኃላፊነቶች (Custom Roles)", "Gahee Hojii Kan Keessan (Custom Roles)", "Custom Roles (Owner Configured)")}>
+                            {filteredCustomRoles.map((cr) => (
+                              <option key={cr.id} value={`CUSTOM_${cr.id}`}>
+                                ✨ {language === "am" && cr.nameAm ? cr.nameAm : language === "om" && cr.nameOm ? cr.nameOm : cr.name} ({cr.code}) [Archetype: {cr.baseRole}]
+                              </option>
+                            ))}
+                          </optgroup>
+                        )}
+                        <optgroup label={l("መደበኛ የስርዓት ኃላፊነቶች", "Gahee Hojii Idilee", "Standard System Roles")}>
+                          {filteredRoles.map((r) => (
+                            <option key={r} value={r}>
+                              {getRoleLabel(r)}
+                            </option>
+                          ))}
+                        </optgroup>
                       </select>
+                      {selectedRole.startsWith("CUSTOM_") && (
+                        <div className="mt-1.5 flex items-center gap-1.5 text-xs text-amber-800 bg-amber-50 px-2.5 py-1 rounded-lg border border-amber-200">
+                          <Sparkles className="w-3.5 h-3.5 text-[#E87A18] shrink-0" />
+                          <span className="font-bold">
+                            {(() => {
+                              const cr = customRoles.find((c) => `CUSTOM_${c.id}` === selectedRole);
+                              return cr ? `${cr.name} (${cr.permissions.length} capabilities assigned)` : "Custom Role Selected";
+                            })()}
+                          </span>
+                        </div>
+                      )}
                       {isRetailSpoke && (
                         <p className="text-[11px] text-amber-800 mt-1 font-medium">
                           {l(

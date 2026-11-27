@@ -12,6 +12,7 @@ import LanguageSelector from '@/components/LanguageSelector';
 import NotificationBell from '@/components/NotificationBell';
 import { toast } from 'sonner';
 import { isRouteAllowed, getRoleHomeRoute } from '@/lib/routeGuard';
+import { hasPrivilege } from '@/lib/privileges';
 import {
   LogOut, LayoutDashboard, Users, MapPin, Package,
   Banknote, Layers, Boxes, ArrowRightLeft, ChefHat, BarChart3, Truck,
@@ -28,7 +29,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
 
   const { user, isAuthenticated, isLoading, logout } = useAuth();
   const { branches, selectedBranchId, setSelectedBranchId } = useBranch();
-  const { t } = useLanguage();
+  const { t, language } = useLanguage();
   const router = useRouter();
   const pathname = usePathname();
   const [isMobileOpen, setIsMobileOpen] = useState(false);
@@ -80,56 +81,56 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   const isAdmin = role === 'ADMIN';
 
   const menuItems = [
-    ...(isOwner ? [{ icon: LayoutDashboard, label: t('nav.dashboard'), href: '/' }] : []),
+    ...(isOwner || hasPrivilege(user, 'access_dashboard') ? [{ icon: LayoutDashboard, label: t('nav.dashboard'), href: '/' }] : []),
     { icon: UserCheck, label: t('nav.profileSalary'), href: '/my-profile' },
-    ...(isOwner ? [{ icon: MapPin, label: t('nav.branches'), href: '/branches' }] : []),
-    ...((isOwner || isAdmin) ? [{ icon: Users, label: t('nav.users'), href: '/users' }] : []),
-    ...((isOwner || isAdmin || role === 'BAKER' || role === 'CAKE_WORKER' || role === 'SAMBUSA_WORKER') ? [
+    ...(isOwner || hasPrivilege(user, 'access_branches') ? [{ icon: MapPin, label: t('nav.branches'), href: '/branches' }] : []),
+    ...((isOwner || isAdmin || hasPrivilege(user, 'access_users')) ? [{ icon: Users, label: t('nav.users'), href: '/users' }] : []),
+    ...((isOwner || isAdmin || role === 'BAKER' || role === 'CAKE_WORKER' || role === 'SAMBUSA_WORKER' || hasPrivilege(user, 'access_production')) ? [
       { icon: ChefHat, label: t('nav.production'), href: '/production' },
-      ...((isOwner || isAdmin) ? [{ icon: History, label: t('nav.dailyProductHistory'), href: '/production/history' }] : [])
+      ...((isOwner || isAdmin || hasPrivilege(user, 'access_production')) ? [{ icon: History, label: t('nav.dailyProductHistory'), href: '/production/history' }] : [])
     ] : []),
-    ...((isOwner || isAdmin) ? [
+    ...((isOwner || isAdmin || hasPrivilege(user, 'access_daily_sessions')) ? [
       { icon: CalendarDays, label: t('nav.dailySessions'), href: '/daily-sessions' },
     ] : []),
-    ...((isOwner || isAdmin || role === 'CASHIER') ? [
+    ...((isOwner || isAdmin || role === 'CASHIER' || hasPrivilege(user, 'access_customer_credits')) ? [
       { icon: CreditCard, label: t('nav.customerCreditSales'), href: '/customer-credits' }
     ] : []),
-    ...(isOwner ? [
+    ...(isOwner || hasPrivilege(user, 'access_categories') ? [
       { icon: Layers, label: t('nav.categories'), href: '/product-categories' }
     ] : []),
-    ...(isOwner ? [
+    ...(isOwner || hasPrivilege(user, 'access_products') ? [
       { icon: Package, label: t('nav.products'), href: '/products' }
     ] : []),
-    ...((isOwner || isAdmin || role === 'CASHIER' || role === 'CAKE_WORKER') ? [
+    ...((isOwner || isAdmin || role === 'CASHIER' || role === 'CAKE_WORKER' || hasPrivilege(user, 'access_products')) ? [
       { icon: ArrowRightLeft, label: t('nav.conversions'), href: '/product-conversions' }
     ] : []),
-    ...((isOwner || isAdmin || role === 'STOCK_KEEPER') ? [
+    ...((isOwner || isAdmin || role === 'STOCK_KEEPER' || hasPrivilege(user, 'access_stock')) ? [
       { icon: Boxes, label: t('nav.stock'), href: '/stock' }
     ] : []),
-    ...((isOwner || isAdmin || role === 'STOCK_KEEPER') ? [
+    ...((isOwner || isAdmin || role === 'STOCK_KEEPER' || hasPrivilege(user, 'access_stock')) ? [
       { icon: ArrowRightLeft, label: t('nav.stockMovements'), href: '/stock-movements' }
     ] : []),
-    ...((isOwner || isAdmin || role === 'STOCK_KEEPER' || role === 'CASHIER') ? [
+    ...((isOwner || isAdmin || role === 'CASHIER' || hasPrivilege(user, 'access_transfers')) ? [
       { icon: ArrowRightLeft, label: t('nav.transfers') || 'Transfers', href: '/transfers' }
     ] : []),
-    ...((isOwner || isAdmin || role === 'CASHIER') ? [
+    ...((isOwner || isAdmin || role === 'CASHIER' || hasPrivilege(user, 'access_suppliers')) ? [
       { icon: Truck, label: t('nav.suppliers'), href: '/suppliers' }
     ] : []),
-    ...((isOwner || isAdmin || role === 'CASHIER') ? [
+    ...((isOwner || isAdmin || role === 'CASHIER' || hasPrivilege(user, 'access_expenses')) ? [
       { icon: DollarSign, label: t('nav.expenses'), href: '/expenses' }
     ] : []),
-    ...(isOwner ? [
+    ...(isOwner || hasPrivilege(user, 'access_owner_loans') ? [
       { icon: HandCoins, label: t('nav.ownerLoans'), href: '/owner-loans' }
     ] : []),
-    ...((isOwner || isAdmin) ? [
+    ...((isOwner || isAdmin || hasPrivilege(user, 'access_attendance')) ? [
       { icon: Clock, label: t('nav.attendance') || 'Attendance', href: '/attendance' }
     ] : []),
-    ...(isOwner ? [
+    ...(isOwner || hasPrivilege(user, 'access_payroll') ? [
       { icon: Banknote, label: t('nav.payroll'), href: '/payroll' }
     ] : isAdmin ? [
       { icon: Banknote, label: `${t('payroll.navLoans')} & ${t('payroll.navPenalties')}`, href: '/payroll/loans' }
     ] : []),
-    ...(isOwner ? [
+    ...(isOwner || isAdmin || hasPrivilege(user, 'access_reports') ? [
       { icon: BarChart3, label: t('nav.reports'), href: '/reports' }
     ] : []),
     ...(isOwner ? [
@@ -154,7 +155,15 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
           </div>
           <div>
             <span className="text-xl font-extrabold tracking-tight text-white block leading-tight">Bakery ERP</span>
-            <span className="text-[10px] uppercase font-bold text-[#E2C7B4] tracking-widest block">{user?.role} PORTAL</span>
+            <span className="text-[10px] uppercase font-bold text-[#E2C7B4] tracking-widest block">
+              {user?.customRole
+                ? language === 'am' && user.customRole.nameAm
+                  ? user.customRole.nameAm
+                  : language === 'om' && user.customRole.nameOm
+                  ? user.customRole.nameOm
+                  : user.customRole.name
+                : user?.role} PORTAL
+            </span>
           </div>
         </div>
         <button
@@ -214,7 +223,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
 
   return (
     <DashboardLayoutContext.Provider value={{ isNested: true }}>
-      <div className="min-h-screen bg-[#FAF7EE] text-[#2C1B10] flex p-1.5 xs:p-2.5 sm:p-3 md:p-6 font-sans w-full max-w-full overflow-x-hidden">
+      <div className="min-h-screen bg-[#FAF7EE] text-[#2C1B10] flex p-1 xs:p-2 sm:p-3 md:p-6 font-sans w-full max-w-full overflow-x-hidden">
         {/* Mobile & Tablet Drawer Overlay */}
         {isMobileOpen && (
           <div
@@ -239,8 +248,8 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
         {/* Main Content Area */}
         <div className="flex-1 flex flex-col w-full max-w-full pl-0 lg:pl-72 min-h-screen min-w-0 overflow-x-hidden">
           {/* Top Header Bar */}
-          <header className="h-14 xs:h-16 bg-[#FFFDF8]/90 backdrop-blur-md border border-[#EDE4D5] rounded-2xl sticky top-1.5 xs:top-3 md:top-6 z-30 px-2.5 xs:px-4 md:px-6 flex items-center justify-between shadow-[0_4px_20px_rgba(74,46,27,0.04)] mb-5 xs:mb-7 md:mb-14 gap-2">
-            <div className="flex items-center space-x-2 xs:space-x-3 md:space-x-4 min-w-0">
+          <header className="h-13 xs:h-14 sm:h-16 bg-[#FFFDF8]/90 backdrop-blur-md border border-[#EDE4D5] rounded-xl xs:rounded-2xl sticky top-1 xs:top-2 md:top-6 z-30 px-2 xs:px-3 sm:px-4 md:px-6 flex items-center justify-between shadow-[0_4px_20px_rgba(74,46,27,0.04)] mb-3.5 xs:mb-4 sm:mb-6 md:mb-8 gap-1.5 xs:gap-2">
+            <div className="flex items-center space-x-1.5 xs:space-x-2.5 md:space-x-4 min-w-0">
               <button
                 onClick={() => setIsMobileOpen(true)}
                 className="lg:hidden p-1.5 xs:p-2 rounded-xl bg-[#F4ECE1] text-[#4A2E1B] hover:bg-[#E0D5C3] transition-colors shrink-0"
@@ -250,11 +259,11 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
               </button>
 
               {isOwner && (
-                <div className="flex items-center space-x-1.5 xs:space-x-2 min-w-0">
+                <div className="flex items-center space-x-1 xs:space-x-1.5 min-w-0">
                   <span className="text-xs font-bold text-[#8C7361] uppercase tracking-wider hidden lg:inline">{t('common.branch')}:</span>
                   <div className="relative inline-flex items-center">
                     {/* Visual Pill: Icon + First 4 letters on mobile (< md), Full name on desktop (md+) */}
-                    <div className="flex items-center gap-1 bg-[#F4ECE1] hover:bg-[#EDE0CD] border border-[#E0D5C3] text-[#2C1B10] px-2 py-1 xs:px-2.5 xs:py-1.5 rounded-xl font-bold text-xs pointer-events-none transition-colors shadow-2xs">
+                    <div className="flex items-center gap-1 bg-[#F4ECE1] hover:bg-[#EDE0CD] border border-[#E0D5C3] text-[#2C1B10] px-1.5 py-1 xs:px-2.5 xs:py-1.5 rounded-lg xs:rounded-xl font-bold text-xs pointer-events-none transition-colors shadow-2xs">
                       <span className="text-xs shrink-0">{currentBranch ? '📍' : '🌐'}</span>
                       <span className="md:hidden font-extrabold tracking-tight">
                         {currentBranch ? currentBranch.name.slice(0, 4) : 'All'}
@@ -284,7 +293,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
               )}
             </div>
 
-            <div className="flex items-center space-x-1.5 xs:space-x-2.5 md:space-x-4 shrink-0">
+            <div className="flex items-center space-x-1 xs:space-x-2 md:space-x-3 shrink-0">
               {/* Notification Bell */}
               <NotificationBell />
 
@@ -293,7 +302,13 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
 
               {/* Role Badge - shown on md+ to preserve space on mobile */}
               <span className="hidden md:inline-block px-3 py-1 rounded-full text-[11px] font-extrabold bg-[#E87A18]/10 text-[#E87A18] border border-[#E87A18]/20 uppercase tracking-wider">
-                {user?.role}
+                {user?.customRole
+                  ? language === 'am' && user.customRole.nameAm
+                    ? user.customRole.nameAm
+                    : language === 'om' && user.customRole.nameOm
+                    ? user.customRole.nameOm
+                    : user.customRole.name
+                  : user?.role}
               </span>
 
               {/* Profile Avatar Pill */}
@@ -303,10 +318,10 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
                     src={getImageUrl(user.avatarUrl || user.filesUrl)!}
                     alt={user.fullName || 'User'}
                     onError={() => setHeaderAvatarError(true)}
-                    className="w-8 h-8 xs:w-9 xs:h-9 rounded-xl object-cover border border-[#E87A18]/30 shadow-md"
+                    className="w-7 h-7 xs:w-8 xs:h-8 sm:w-9 sm:h-9 rounded-lg xs:rounded-xl object-cover border border-[#E87A18]/30 shadow-md"
                   />
                 ) : (
-                  <div className="w-8 h-8 xs:w-9 xs:h-9 rounded-xl bg-gradient-to-tr from-[#4A2E1B] to-[#E87A18] text-white flex items-center justify-center font-extrabold text-xs xs:text-sm shadow-md border border-white/20">
+                  <div className="w-7 h-7 xs:w-8 xs:h-8 sm:w-9 sm:h-9 rounded-lg xs:rounded-xl bg-gradient-to-tr from-[#4A2E1B] to-[#E87A18] text-white flex items-center justify-center font-extrabold text-[11px] xs:text-xs sm:text-sm shadow-md border border-white/20">
                     {user?.fullName?.charAt(0) || 'B'}
                   </div>
                 )}
@@ -316,7 +331,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
 
           {/* Page Content View */}
           <main className="flex-1 px-0.5 xs:px-1 sm:px-2 w-full max-w-full min-w-0">
-            <div className="max-w-7xl mx-auto space-y-4 xs:space-y-6 w-full max-w-full min-w-0">
+            <div className="max-w-7xl mx-auto space-y-3.5 xs:space-y-5 w-full max-w-full min-w-0">
               {children}
             </div>
           </main>

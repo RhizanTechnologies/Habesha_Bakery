@@ -4,6 +4,7 @@ import React, { createContext, useContext, useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { api } from '@/lib/axios';
 import { syncPushSubscription, unsubscribePush } from '@/lib/pushNotifications';
+import { getRoleHomeRoute } from '@/lib/routeGuard';
 
 export interface AuthUser {
   id: string;
@@ -118,19 +119,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     if (typeof window !== 'undefined') {
       window.scrollTo(0, 0);
     }
-    if (data.user.role === 'EMPLOYEE') {
-      router.push('/my-profile');
-    } else if (data.user.role === 'ADMIN') {
-      router.push('/production/history');
-    } else if (data.user.role === 'CASHIER') {
-      router.push('/customer-credits');
-    } else if (data.user.role === 'STOCK_KEEPER') {
-      router.push('/stock');
-    } else if (data.user.role === 'BAKER' || data.user.role === 'CAKE_WORKER' || data.user.role === 'SAMBUSA_WORKER') {
-      router.push('/production');
-    } else {
-      router.push('/');
-    }
+    const targetRoute = getRoleHomeRoute(data.user);
+    router.push(targetRoute);
   };
 
   const logout = async () => {
