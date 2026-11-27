@@ -166,8 +166,10 @@ export async function apiRequest<T = any>(
       const json = await res.json().catch(() => ({}));
 
       if (!res.ok) {
+        const isExempt = endpoint.includes('/auth/login') || endpoint.includes('/settings');
         if (
           res.status === 401 &&
+          !isExempt &&
           typeof window !== 'undefined' &&
           window.location.pathname !== '/login' &&
           !window.location.pathname.startsWith('/attendance/kiosk')

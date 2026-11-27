@@ -32,7 +32,15 @@ api.interceptors.response.use(
   (response) => response,
   (error) => {
     if (error.response?.status === 401) {
-      if (typeof window !== 'undefined' && window.location.pathname !== '/login' && !window.location.pathname.startsWith('/attendance/kiosk')) {
+      const requestUrl = error.config?.url || '';
+      // Never dispatch auth-error for non-session or settings endpoints
+      const isExempt = requestUrl.includes('/auth/login') || requestUrl.includes('/settings');
+      if (
+        !isExempt &&
+        typeof window !== 'undefined' &&
+        window.location.pathname !== '/login' &&
+        !window.location.pathname.startsWith('/attendance/kiosk')
+      ) {
         localStorage.removeItem('token');
         window.dispatchEvent(new Event('auth-error'));
       }

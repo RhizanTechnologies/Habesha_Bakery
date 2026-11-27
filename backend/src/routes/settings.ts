@@ -4,18 +4,15 @@ import { authMiddleware, requireRole, type AuthRequest } from '../middleware/aut
 
 export const settingsRouter = Router();
 
-// All settings routes require authentication
-settingsRouter.use(authMiddleware);
-
 const DEFAULT_SETTINGS: Record<string, string> = {
   calendarType: 'ETHIOPIAN', // 'ETHIOPIAN' | 'GREGORIAN'
 };
 
 /**
  * GET /api/settings
- * Available to all authenticated users so the frontend can adapt its calendar and UI.
+ * Publicly accessible so the frontend and login screen can adapt calendar type without auth failure.
  */
-settingsRouter.get('/', async (_req: AuthRequest, res: Response) => {
+settingsRouter.get('/', async (_req: any, res: Response) => {
   try {
     const allSettings = await prisma.systemSetting.findMany();
     const settingsMap: Record<string, string> = { ...DEFAULT_SETTINGS };
@@ -40,7 +37,7 @@ settingsRouter.get('/', async (_req: AuthRequest, res: Response) => {
  * PATCH /api/settings
  * Restricted to OWNER role only.
  */
-settingsRouter.patch('/', requireRole('OWNER'), async (req: AuthRequest, res: Response) => {
+settingsRouter.patch('/', authMiddleware, requireRole('OWNER'), async (req: AuthRequest, res: Response) => {
   try {
     const { calendarType } = req.body;
 
